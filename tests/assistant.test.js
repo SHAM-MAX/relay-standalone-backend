@@ -57,11 +57,11 @@ test('AI uses static system rules and separate untrusted context, with no tools 
   global.fetch = async (reqUrl, fetchOptions) => {
     const url = String(reqUrl);
     if (url.includes('api.github.com')) {
-      if (url.includes('/issues')) return { ok: true, json: async () => ([]) };
-      if (url.includes('/labels')) return { ok: true, json: async () => ([]) };
-      if (url.includes('/milestones')) return { ok: true, json: async () => ([]) };
-      if (url.includes('/readme')) return { ok: true, json: async () => ({ content: '' }) };
-      return { ok: true, json: async () => ({ full_name: 'test/repo', description: '' }) };
+      if (url.includes('/issues')) return { ok: true, headers: new Headers(), json: async () => ([]) };
+      if (url.includes('/labels')) return { ok: true, headers: new Headers(), json: async () => ([]) };
+      if (url.includes('/milestones')) return { ok: true, headers: new Headers(), json: async () => ([]) };
+      if (url.includes('/readme')) return { ok: true, headers: new Headers(), json: async () => ({ content: '' }) };
+      return { ok: true, headers: new Headers(), json: async () => ({ full_name: 'test/repo', description: '' }) };
     }
     if (url.includes('generativelanguage.googleapis.com')) {
       const body = JSON.parse(fetchOptions.body);
@@ -70,7 +70,7 @@ test('AI uses static system rules and separate untrusted context, with no tools 
         messages: body.contents.map(c => ({ role: c.role, content: c.parts[0].text })),
         maxTokens: body.generationConfig?.maxOutputTokens
       };
-      return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: 'Please provide the issue description.' }] }, finishReason: 'STOP' }] }) };
+      return { ok: true, headers: new Headers(), json: async () => ({ candidates: [{ content: { parts: [{ text: 'Please provide the issue description.' }] }, finishReason: 'STOP' }] }) };
     }
     return originalFetch(reqUrl, fetchOptions);
   };
@@ -95,14 +95,14 @@ test('malformed AI replies fail without fake success', async () => {
   global.fetch = async (reqUrl, fetchOptions) => {
     const url = String(reqUrl);
     if (url.includes('api.github.com')) {
-      if (url.includes('/issues')) return { ok: true, json: async () => ([]) };
-      if (url.includes('/labels')) return { ok: true, json: async () => ([]) };
-      if (url.includes('/milestones')) return { ok: true, json: async () => ([]) };
-      if (url.includes('/readme')) return { ok: true, json: async () => ({ content: '' }) };
-      return { ok: true, json: async () => ({ full_name: 'test/repo', description: '' }) };
+      if (url.includes('/issues')) return { ok: true, headers: new Headers(), json: async () => ([]) };
+      if (url.includes('/labels')) return { ok: true, headers: new Headers(), json: async () => ([]) };
+      if (url.includes('/milestones')) return { ok: true, headers: new Headers(), json: async () => ([]) };
+      if (url.includes('/readme')) return { ok: true, headers: new Headers(), json: async () => ({ content: '' }) };
+      return { ok: true, headers: new Headers(), json: async () => ({ full_name: 'test/repo', description: '' }) };
     }
     if (url.includes('generativelanguage.googleapis.com')) {
-      return { ok: true, json: async () => ({ candidates: [currentResult] }) };
+      return { ok: true, headers: new Headers(), json: async () => ({ candidates: [currentResult] }) };
     }
     return originalFetch(reqUrl, fetchOptions);
   };
@@ -122,18 +122,18 @@ test('maintains conversation history across multiple requests for the same membe
   global.fetch = async (reqUrl, fetchOptions) => {
     const url = String(reqUrl);
     if (url.includes('api.github.com')) {
-      if (url.includes('/issues')) return { ok: true, json: async () => ([]) };
-      if (url.includes('/labels')) return { ok: true, json: async () => ([]) };
-      if (url.includes('/milestones')) return { ok: true, json: async () => ([]) };
-      if (url.includes('/readme')) return { ok: true, json: async () => ({ content: '' }) };
-      return { ok: true, json: async () => ({ full_name: 'test/repo', description: '' }) };
+      if (url.includes('/issues')) return { ok: true, headers: new Headers(), json: async () => ([]) };
+      if (url.includes('/labels')) return { ok: true, headers: new Headers(), json: async () => ([]) };
+      if (url.includes('/milestones')) return { ok: true, headers: new Headers(), json: async () => ([]) };
+      if (url.includes('/readme')) return { ok: true, headers: new Headers(), json: async () => ({ content: '' }) };
+      return { ok: true, headers: new Headers(), json: async () => ({ full_name: 'test/repo', description: '' }) };
     }
     if (url.includes('generativelanguage.googleapis.com')) {
       const body = JSON.parse(fetchOptions.body);
       optionsList.push({
         messages: body.contents.map(c => ({ role: c.role === 'model' ? 'assistant' : 'user', content: c.parts[0].text }))
       });
-      return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: 'Task 1, Task 2' }] }, finishReason: 'STOP' }] }) };
+      return { ok: true, headers: new Headers(), json: async () => ({ candidates: [{ content: { parts: [{ text: 'Task 1, Task 2' }] }, finishReason: 'STOP' }] }) };
     }
     return originalFetch(reqUrl, fetchOptions);
   };
@@ -200,11 +200,11 @@ test('PM-context retrieval fetches issues, labels, milestones, and README, avoid
     const url = String(reqUrl);
     fetchCalls.push(url);
     if (url.includes('error-repo')) return { ok: false };
-    if (url.includes('/issues')) return { ok: true, json: async () => ([{ number: 1, title: 'Bug', state: 'open', pull_request: null }]) };
-    if (url.includes('/labels')) return { ok: true, json: async () => ([{ name: 'bug', description: 'A bug' }]) };
-    if (url.includes('/milestones')) return { ok: true, json: async () => ([{ title: 'v1.0', open_issues: 2 }]) };
-    if (url.includes('/readme')) return { ok: true, json: async () => ({ content: Buffer.from('This project uses Angular, Spring Boot and PostgreSQL.').toString('base64') }) };
-    if (url.includes('repos/owner/repo')) return { ok: true, json: async () => ({ full_name: 'owner/repo', description: 'Test repo' }) };
+    if (url.includes('/issues')) return { ok: true, headers: new Headers(), json: async () => ([{ number: 1, title: 'Bug', state: 'open', pull_request: null }]) };
+    if (url.includes('/labels')) return { ok: true, headers: new Headers(), json: async () => ([{ name: 'bug', description: 'A bug' }]) };
+    if (url.includes('/milestones')) return { ok: true, headers: new Headers(), json: async () => ([{ title: 'v1.0', open_issues: 2 }]) };
+    if (url.includes('/readme')) return { ok: true, headers: new Headers(), json: async () => ({ content: Buffer.from('This project uses Angular, Spring Boot and PostgreSQL.').toString('base64') }) };
+    if (url.includes('repos/owner/repo')) return { ok: true, headers: new Headers(), json: async () => ({ full_name: 'owner/repo', description: 'Test repo' }) };
     return { ok: false };
   };
 
@@ -218,7 +218,7 @@ test('PM-context retrieval fetches issues, labels, milestones, and README, avoid
       if (url.includes('generativelanguage.googleapis.com')) {
         const body = JSON.parse(fetchOptions.body);
         aiOptions = { messages: body.contents.map(c => ({ role: c.role, content: c.parts[0].text })) };
-        return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: 'Plan' }] }, finishReason: 'STOP' }] }) };
+        return { ok: true, headers: new Headers(), json: async () => ({ candidates: [{ content: { parts: [{ text: 'Plan' }] }, finishReason: 'STOP' }] }) };
       }
       return originalFetch(reqUrl, fetchOptions);
     };
