@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import assistantRoute from './api/assistant.js';
 import repositoriesRoute from './api/github/repositories.js';
+import issuesRoute from './api/github/issues.js';
 
 dotenv.config();
 
@@ -28,6 +29,9 @@ app.options('/api/assistant', wrap(assistantRoute));
 
 app.post('/api/github/repositories', wrap(repositoriesRoute));
 app.options('/api/github/repositories', wrap(repositoriesRoute));
+
+app.post('/api/github/issues', wrap(issuesRoute));
+app.options('/api/github/issues', wrap(issuesRoute));
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
