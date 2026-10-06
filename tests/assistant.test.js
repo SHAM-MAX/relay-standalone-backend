@@ -460,3 +460,41 @@ test('Single issue generation still works backward compatible', async () => {
     global.fetch = originalFetch;
   }
 });
+
+test('Groq structured response can contain issuePlan and projectPlan (nullable)', async () => {
+  process.env.GROQ_API_KEY = 'fake-key';
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = async (reqUrl, fetchOptions) => {
+      const url = String(reqUrl);
+      if (url.includes('api.github.com')) {
+        if (url.includes('/issues')) return { ok: true, headers: new Headers(), json: async () => ([]) };
+        if (url.includes('/labels')) return { ok: true, headers: new Headers(), json: async () => ([]) };
+        if (url.includes('/milestones')) return { ok: true, headers: new Headers(), json: async () => ([]) };
+        if (url.includes('/readme')) return { ok: true, headers: new Headers(), json: async () => ({ content: '' }) };
+        return { ok: true, headers: new Headers(), json: async () => ({ full_name: 'test/repo', description: '' }) };
+      }
+      if (url.includes('api.groq.com')) {
+        const body = JSON.parse(fetchOptions.body);
+        assert.equal(body.response_format.json_schema.schema.required.includes('issuePlan'), true);
+        assert.equal(body.response_format.json_schema.schema.required.includes('projectPlan'), true);
+        assert.deepEqual(body.response_format.json_schema.schema.properties.issuePlan.type, ['object', 'null']);
+        return { ok: true, headers: new Headers(), json: async () => ({ 
+          choices: [{ 
+            message: { content: JSON.stringify({
+              reply: 'Here is your issue', 
+              issuePlan: { issues: [{ id: 'task-1', issue_type: 'task', title: 'Fix typo', body: '...' }] },
+              projectPlan: null
+            }) }
+          }] 
+        }) };
+      }
+      return originalFetch(reqUrl, fetchOptions);
+    };
+    const result = await assistant.answerAssistant({ message: 'Create a task', model: 'openai/gpt-oss-120b', context: { host: 'github.com', owner: 'SHAM-MAX', repository: 'GitHub-Kanban-Practice', url: 'https://github.com/SHAM-MAX/GitHub-Kanban-Practice/issues/15', pageType: 'issues', issueNumber: null, pullRequestNumber: null, branch: null } }, 42);
+    assert.equal(result.projectPlan, null);
+    assert.ok(result.issuePlan.issues.length === 1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
