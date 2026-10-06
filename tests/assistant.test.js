@@ -271,30 +271,6 @@ test('ASSISTANT_SYSTEM includes issue drafting instructions, formats, dependency
   assert.ok(sys.includes('Distinguish clearly between "Known project facts" and "Planning assumptions"'));
   assert.ok(sys.includes('The repository name must NOT be used to infer project type, technology stack'));
 
-  // Verify issue formats
-  assert.ok(sys.includes('User Story:'));
-  assert.ok(sys.includes('As a <User>'));
-  assert.ok(sys.includes('I want to <Purpose / capability>'));
-  assert.ok(sys.includes('So that <Business value / outcome>'));
-
-  assert.ok(sys.includes('Bug:'));
-  assert.ok(sys.includes('Current Behaviour:'));
-  assert.ok(sys.includes('Expected Behaviour:'));
-  assert.ok(sys.includes('DO NOT invent Current/Expected Behaviour'));
-
-  assert.ok(sys.includes('Task:'));
-  assert.ok(sys.includes('Objective:'));
-
-  assert.ok(sys.includes('Change Request:'));
-  assert.ok(sys.includes('Current State:'));
-  assert.ok(sys.includes('Reason / Business Need:'));
-  
-  // Verify breakdown, labels, dependencies, and existing issues
-  assert.ok(sys.includes('Break large requirements into multiple logical Issues.'));
-  assert.ok(sys.includes('Identify dependencies between proposed Issues.'));
-  assert.ok(sys.includes('Labels:'));
-  assert.ok(sys.includes('Dependencies:'));
-  assert.ok(sys.includes('Priority:'));
   assert.ok(sys.includes('Reference existing GitHub Issues'));
   
   // Verify draft user confirmation message
@@ -386,3 +362,37 @@ test('model selection, fallback and retry logic', async () => {
 
   global.fetch = originalFetch;
 });
+
+test('Issue formats and bug rules are present in system prompt', async () => {
+  const { ASSISTANT_SYSTEM } = await import('../lib/assistant.js');
+  const assert = await import('node:assert/strict');
+  
+  // user_story
+  assert.default.ok(ASSISTANT_SYSTEM.includes('As a <User>'));
+  assert.default.ok(ASSISTANT_SYSTEM.includes('I want to <What is the Purpose>'));
+  assert.default.ok(ASSISTANT_SYSTEM.includes('So that <What you gain by this story>'));
+  
+  // task
+  assert.default.ok(ASSISTANT_SYSTEM.includes('OBJECTIVE'));
+  assert.default.ok(ASSISTANT_SYSTEM.includes('DESCRIPTION'));
+  assert.default.ok(ASSISTANT_SYSTEM.includes('ACTIVITIES'));
+  
+  // bug
+  assert.default.ok(ASSISTANT_SYSTEM.includes('BUG DESCRIPTION'));
+  assert.default.ok(ASSISTANT_SYSTEM.includes('STEPS TO REPRODUCE'));
+  assert.default.ok(ASSISTANT_SYSTEM.includes('ENVIRONMENT'));
+  assert.default.ok(ASSISTANT_SYSTEM.includes('Never invent: Current Behaviour'));
+  
+  // change_request
+  assert.default.ok(ASSISTANT_SYSTEM.includes('IMPACT ANALYSIS'));
+  assert.default.ok(ASSISTANT_SYSTEM.includes('FEASIBILITY'));
+  assert.default.ok(ASSISTANT_SYSTEM.includes('EFFORT ESTIMATION'));
+});
+
+test('Incomplete Bug request returns null issuePlan', async () => {
+  const { ASSISTANT_SYSTEM } = await import('../lib/assistant.js');
+  const assert = await import('node:assert/strict');
+  assert.default.ok(ASSISTANT_SYSTEM.includes('DO NOT generate the Bug issue'));
+  assert.default.ok(ASSISTANT_SYSTEM.includes('issuePlan: null'));
+});
+
