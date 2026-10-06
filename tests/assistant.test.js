@@ -83,7 +83,7 @@ test('AI uses static system rules and separate untrusted context, with no tools 
     assert.doesNotMatch(options.system, /SHAM-MAX/);
     assert.match(options.messages[0].content, new RegExp(body.message));
     assert.match(options.messages[0].content, /UNTRUSTED_GITHUB_CONTEXT/);
-    assert.equal(options.maxTokens, 1800);
+    assert.equal(options.maxTokens, 8192);
   } finally {
     global.fetch = originalFetch;
   }
@@ -368,25 +368,25 @@ test('Issue formats and bug rules are present in system prompt', async () => {
   const assert = await import('node:assert/strict');
   
   // user_story
-  assert.default.ok(ASSISTANT_SYSTEM.includes('As a <User>'));
-  assert.default.ok(ASSISTANT_SYSTEM.includes('I want to <What is the Purpose>'));
-  assert.default.ok(ASSISTANT_SYSTEM.includes('So that <What you gain by this story>'));
+  assert.default.ok(ASSISTANT_SYSTEM.includes('As a <User>,'));
+  assert.default.ok(ASSISTANT_SYSTEM.includes('I want to <Purpose>,'));
+  assert.default.ok(ASSISTANT_SYSTEM.includes('So that <Business value>.'));
   
   // task
-  assert.default.ok(ASSISTANT_SYSTEM.includes('OBJECTIVE'));
-  assert.default.ok(ASSISTANT_SYSTEM.includes('DESCRIPTION'));
-  assert.default.ok(ASSISTANT_SYSTEM.includes('ACTIVITIES'));
+  assert.default.ok(ASSISTANT_SYSTEM.includes('## OBJECTIVE'));
+  assert.default.ok(ASSISTANT_SYSTEM.includes('## DESCRIPTION'));
+  assert.default.ok(ASSISTANT_SYSTEM.includes('## ACTIVITIES'));
   
   // bug
-  assert.default.ok(ASSISTANT_SYSTEM.includes('BUG DESCRIPTION'));
-  assert.default.ok(ASSISTANT_SYSTEM.includes('STEPS TO REPRODUCE'));
-  assert.default.ok(ASSISTANT_SYSTEM.includes('ENVIRONMENT'));
+  assert.default.ok(ASSISTANT_SYSTEM.includes('## BUG DESCRIPTION'));
+  assert.default.ok(ASSISTANT_SYSTEM.includes('## STEPS TO REPRODUCE'));
+  assert.default.ok(ASSISTANT_SYSTEM.includes('## ENVIRONMENT'));
   assert.default.ok(ASSISTANT_SYSTEM.includes('Never invent: Current Behaviour'));
   
   // change_request
-  assert.default.ok(ASSISTANT_SYSTEM.includes('IMPACT ANALYSIS'));
-  assert.default.ok(ASSISTANT_SYSTEM.includes('FEASIBILITY'));
-  assert.default.ok(ASSISTANT_SYSTEM.includes('EFFORT ESTIMATION'));
+  assert.default.ok(ASSISTANT_SYSTEM.includes('## IMPACT ANALYSIS'));
+  assert.default.ok(ASSISTANT_SYSTEM.includes('## FEASIBILITY'));
+  assert.default.ok(ASSISTANT_SYSTEM.includes('## EFFORT ESTIMATION'));
 });
 
 test('Incomplete Bug request returns null issuePlan', async () => {
