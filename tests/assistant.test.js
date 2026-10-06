@@ -279,19 +279,22 @@ test('ASSISTANT_SYSTEM includes issue drafting instructions, formats, dependency
 
 test('model selection, fallback and retry logic', async () => {
   process.env.GOOGLE_API_KEY = 'fake-key';
+  process.env.GROQ_API_KEY = 'fake-groq';
+  process.env.OPENROUTER_API_KEY = 'fake-or';
   const originalFetch = global.fetch;
 
-  // 1. explicit model selection success
+  function mockGithub(url) {
+    if (url.includes('/issues')) return { ok: true, headers: new Headers(), json: async () => ([]) };
+    if (url.includes('/labels')) return { ok: true, headers: new Headers(), json: async () => ([]) };
+    if (url.includes('/milestones')) return { ok: true, headers: new Headers(), json: async () => ([]) };
+    if (url.includes('/readme')) return { ok: true, headers: new Headers(), json: async () => ({ content: '' }) };
+    return { ok: true, headers: new Headers(), json: async () => ({ full_name: 'test/repo', description: '' }) };
+  }
+
+  // 1. explicit model selection success (gemini)
   let fetchedModel = '';
   global.fetch = async (reqUrl, fetchOptions) => {
-    if (String(reqUrl).includes('api.github.com')) {
-      const url = String(reqUrl);
-      if (url.includes('/issues')) return { ok: true, headers: new Headers(), json: async () => ([]) };
-      if (url.includes('/labels')) return { ok: true, headers: new Headers(), json: async () => ([]) };
-      if (url.includes('/milestones')) return { ok: true, headers: new Headers(), json: async () => ([]) };
-      if (url.includes('/readme')) return { ok: true, headers: new Headers(), json: async () => ({ content: '' }) };
-      return { ok: true, headers: new Headers(), json: async () => ({ full_name: 'test/repo', description: '' }) };
-    }
+    if (String(reqUrl).includes('api.github.com')) return mockGithub(String(reqUrl));
     fetchedModel = String(reqUrl).match(/models\/(gemini-.*?):/)[1];
     return { ok: true, headers: new Headers(), json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify({reply: 'Response'}) }] }, finishReason: 'STOP' }] }) };
   };
@@ -299,66 +302,58 @@ test('model selection, fallback and retry logic', async () => {
   assert.equal(result.model, 'gemini-3.7-flash');
   assert.equal(fetchedModel, 'gemini-3.7-flash');
 
-  // 2. auto mode (uses default gemini-3.8-flash first)
+  // 2. auto mode (uses groq first: openai/gpt-oss-120b)
   global.fetch = async (reqUrl, fetchOptions) => {
-    if (String(reqUrl).includes('api.github.com')) {
-      const url = String(reqUrl);
-      if (url.includes('/issues')) return { ok: true, headers: new Headers(), json: async () => ([]) };
-      if (url.includes('/labels')) return { ok: true, headers: new Headers(), json: async () => ([]) };
-      if (url.includes('/milestones')) return { ok: true, headers: new Headers(), json: async () => ([]) };
-      if (url.includes('/readme')) return { ok: true, headers: new Headers(), json: async () => ({ content: '' }) };
-      return { ok: true, headers: new Headers(), json: async () => ({ full_name: 'test/repo', description: '' }) };
-    }
-    fetchedModel = String(reqUrl).match(/models\/(gemini-.*?):/)[1];
-    return { ok: true, headers: new Headers(), json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify({reply: 'Response'}) }] }, finishReason: 'STOP' }] }) };
+    if (String(reqUrl).includes('api.github.com')) return mockGithub(String(reqUrl));
+    const reqBody = JSON.parse(fetchOptions.body);
+    fetchedModel = reqBody.model;
+    return { ok: true, headers: new Headers(), json: async () => ({ choices: [{ message: { content: JSON.stringify({reply: 'Response'}) } }] }) };
   };
   result = await assistant.answerAssistant({ ...body, model: 'auto' }, 42);
-  assert.equal(result.model, 'gemini-3.8-flash');
-  assert.equal(fetchedModel, 'gemini-3.8-flash');
+  assert.equal(result.model, 'openai/gpt-oss-120b');
+  assert.equal(fetchedModel, 'openai/gpt-oss-120b');
 
-  // 3. fallback after 503
+  // 3. fallback through Groq -> OpenRouter -> Gemini
   let fetchCount = 0;
   let modelsTried = [];
   global.fetch = async (reqUrl, fetchOptions) => {
-    if (String(reqUrl).includes('api.github.com')) {
-      const url = String(reqUrl);
-      if (url.includes('/issues')) return { ok: true, headers: new Headers(), json: async () => ([]) };
-      if (url.includes('/labels')) return { ok: true, headers: new Headers(), json: async () => ([]) };
-      if (url.includes('/milestones')) return { ok: true, headers: new Headers(), json: async () => ([]) };
-      if (url.includes('/readme')) return { ok: true, headers: new Headers(), json: async () => ({ content: '' }) };
-      return { ok: true, headers: new Headers(), json: async () => ({ full_name: 'test/repo', description: '' }) };
-    }
-    const m = String(reqUrl).match(/models\/(gemini-.*?):/)[1];
-    modelsTried.push(m);
+    if (String(reqUrl).includes('api.github.com')) return mockGithub(String(reqUrl));
     fetchCount++;
-    if (fetchCount === 1) return { ok: false, status: 503, headers: new Headers(), json: async () => ({ error: { message: 'UNAVAILABLE' } }), text: async () => 'UNAVAILABLE' };
-    return { ok: true, headers: new Headers(), json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify({reply: 'Fallback Response'}) }] }, finishReason: 'STOP' }] }) };
+    
+    if (String(reqUrl).includes('api.groq.com') || String(reqUrl).includes('openrouter.ai')) {
+      const reqBody = JSON.parse(fetchOptions.body);
+      modelsTried.push(reqBody.model);
+      if (fetchCount < 5) return { ok: false, status: 503, headers: new Headers(), text: async () => 'UNAVAILABLE' };
+    } else if (String(reqUrl).includes('generativelanguage')) {
+      modelsTried.push(String(reqUrl).match(/models\/(gemini-.*?):/)[1]);
+      return { ok: true, headers: new Headers(), json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify({reply: 'Fallback Response'}) }] }, finishReason: 'STOP' }] }) };
+    }
   };
   result = await assistant.answerAssistant({ ...body, model: 'auto' }, 42);
-  assert.equal(modelsTried[0], 'gemini-3.8-flash');
-  assert.equal(modelsTried[1], 'gemini-3.7-flash');
-  assert.equal(result.model, 'gemini-3.7-flash');
+  assert.equal(modelsTried[0], 'openai/gpt-oss-120b');
+  assert.equal(modelsTried[1], 'openai/gpt-oss-20b');
+  assert.equal(modelsTried[2], 'qwen/qwen3.5-397b-a17b');
+  assert.equal(modelsTried[3], 'openrouter/free');
+  assert.equal(modelsTried[4], 'gemini-3.8-flash');
+  assert.equal(result.model, 'gemini-3.8-flash');
 
-  // 4. no fallback after 400
+  // 4. fallback on 400 (now supported as fallback for non-temporary errors)
   fetchCount = 0;
   modelsTried = [];
   global.fetch = async (reqUrl, fetchOptions) => {
-    if (String(reqUrl).includes('api.github.com')) {
-      const url = String(reqUrl);
-      if (url.includes('/issues')) return { ok: true, headers: new Headers(), json: async () => ([]) };
-      if (url.includes('/labels')) return { ok: true, headers: new Headers(), json: async () => ([]) };
-      if (url.includes('/milestones')) return { ok: true, headers: new Headers(), json: async () => ([]) };
-      if (url.includes('/readme')) return { ok: true, headers: new Headers(), json: async () => ({ content: '' }) };
-      return { ok: true, headers: new Headers(), json: async () => ({ full_name: 'test/repo', description: '' }) };
-    }
-    const m = String(reqUrl).match(/models\/(gemini-.*?):/)[1];
+    if (String(reqUrl).includes('api.github.com')) return mockGithub(String(reqUrl));
+    
+    const reqBody = fetchOptions.body ? JSON.parse(fetchOptions.body) : null;
+    const m = reqBody ? reqBody.model : String(reqUrl).match(/models\/(gemini-.*?):/)[1];
     modelsTried.push(m);
     fetchCount++;
-    return { ok: false, status: 400, headers: new Headers(), json: async () => ({ error: { message: 'INVALID' } }), text: async () => 'INVALID' };
+    if (fetchCount === 1) return { ok: false, status: 400, headers: new Headers(), text: async () => 'INVALID' }; // Groq fails
+    return { ok: true, headers: new Headers(), json: async () => ({ choices: [{ message: { content: JSON.stringify({reply: 'Fallback Response'}) } }] }) };
   };
-  await assert.rejects(assistant.answerAssistant({ ...body, model: 'auto' }, 42), err => err.status === 400 || String(err).includes('INVALID'));
-  assert.equal(modelsTried.length, 1);
-  assert.equal(modelsTried[0], 'gemini-3.8-flash');
+  result = await assistant.answerAssistant({ ...body, model: 'auto' }, 42);
+  assert.equal(modelsTried.length, 2);
+  assert.equal(modelsTried[0], 'openai/gpt-oss-120b');
+  assert.equal(modelsTried[1], 'openai/gpt-oss-20b');
 
   global.fetch = originalFetch;
 });
@@ -423,7 +418,7 @@ test('Complex requirement returns valid projectPlan alongside issuePlan', async 
       }
       return originalFetch(reqUrl, fetchOptions);
     };
-    const result = await assistant.answerAssistant({ message: 'Break this issue into tasks', context: { host: 'github.com', owner: 'SHAM-MAX', repository: 'GitHub-Kanban-Practice', url: 'https://github.com/SHAM-MAX/GitHub-Kanban-Practice/issues/15', pageType: 'issues', issueNumber: null, pullRequestNumber: null, branch: null } }, 42);
+    const result = await assistant.answerAssistant({ message: 'Break this issue into tasks', model: 'gemini-3.8-flash', context: { host: 'github.com', owner: 'SHAM-MAX', repository: 'GitHub-Kanban-Practice', url: 'https://github.com/SHAM-MAX/GitHub-Kanban-Practice/issues/15', pageType: 'issues', issueNumber: null, pullRequestNumber: null, branch: null } }, 42);
     assert.ok(result.projectPlan);
     assert.equal(result.projectPlan.goal, 'DB Update');
     assert.deepEqual(result.projectPlan.executionOrder, ['task-1']);
@@ -458,7 +453,7 @@ test('Single issue generation still works backward compatible', async () => {
       }
       return originalFetch(reqUrl, fetchOptions);
     };
-    const result = await assistant.answerAssistant({ message: 'Break this issue into tasks', context: { host: 'github.com', owner: 'SHAM-MAX', repository: 'GitHub-Kanban-Practice', url: 'https://github.com/SHAM-MAX/GitHub-Kanban-Practice/issues/15', pageType: 'issues', issueNumber: null, pullRequestNumber: null, branch: null } }, 42);
+    const result = await assistant.answerAssistant({ message: 'Break this issue into tasks', model: 'gemini-3.8-flash', context: { host: 'github.com', owner: 'SHAM-MAX', repository: 'GitHub-Kanban-Practice', url: 'https://github.com/SHAM-MAX/GitHub-Kanban-Practice/issues/15', pageType: 'issues', issueNumber: null, pullRequestNumber: null, branch: null } }, 42);
     assert.equal(result.projectPlan, null);
     assert.ok(result.issuePlan.issues.length === 1);
   } finally {
