@@ -70,7 +70,7 @@ test('AI uses static system rules and separate untrusted context, with no tools 
         messages: body.contents.map(c => ({ role: c.role, content: c.parts[0].text })),
         maxTokens: body.generationConfig?.maxOutputTokens
       };
-      return { ok: true, headers: new Headers(), json: async () => ({ candidates: [{ content: { parts: [{ text: 'Please provide the issue description.' }] }, finishReason: 'STOP' }] }) };
+      return { ok: true, headers: new Headers(), json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify({reply: 'Please provide the issue description.'}) }] }, finishReason: 'STOP' }] }) };
     }
     return originalFetch(reqUrl, fetchOptions);
   };
@@ -107,7 +107,7 @@ test('malformed AI replies fail without fake success', async () => {
     return originalFetch(reqUrl, fetchOptions);
   };
   try {
-    for (const result of [{ content: { parts: [{ text: '' }] }, finishReason: 'STOP' }, { content: { parts: [{ text: 'x'.repeat(16001) }] }, finishReason: 'STOP' }]) {
+    for (const result of [{ content: { parts: [{ text: JSON.stringify({reply: ''}) }] }, finishReason: 'STOP' }, { content: { parts: [{ text: JSON.stringify({reply: 'x'.repeat(16001)}) }] }, finishReason: 'STOP' }]) {
       currentResult = result;
       await assert.rejects(assistant.answerAssistant(body, 42), error => error.code === 'AI_INVALID_RESPONSE');
     }
@@ -133,7 +133,7 @@ test('maintains conversation history across multiple requests for the same membe
       optionsList.push({
         messages: body.contents.map(c => ({ role: c.role === 'model' ? 'assistant' : 'user', content: c.parts[0].text }))
       });
-      return { ok: true, headers: new Headers(), json: async () => ({ candidates: [{ content: { parts: [{ text: 'Task 1, Task 2' }] }, finishReason: 'STOP' }] }) };
+      return { ok: true, headers: new Headers(), json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify({reply: 'Task 1, Task 2'}) }] }, finishReason: 'STOP' }] }) };
     }
     return originalFetch(reqUrl, fetchOptions);
   };
@@ -218,7 +218,7 @@ test('PM-context retrieval fetches issues, labels, milestones, and README, avoid
       if (url.includes('generativelanguage.googleapis.com')) {
         const body = JSON.parse(fetchOptions.body);
         aiOptions = { messages: body.contents.map(c => ({ role: c.role, content: c.parts[0].text })) };
-        return { ok: true, headers: new Headers(), json: async () => ({ candidates: [{ content: { parts: [{ text: 'Plan' }] }, finishReason: 'STOP' }] }) };
+        return { ok: true, headers: new Headers(), json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify({reply: 'Plan'}) }] }, finishReason: 'STOP' }] }) };
       }
       return originalFetch(reqUrl, fetchOptions);
     };
@@ -317,7 +317,7 @@ test('model selection, fallback and retry logic', async () => {
       return { ok: true, headers: new Headers(), json: async () => ({ full_name: 'test/repo', description: '' }) };
     }
     fetchedModel = String(reqUrl).match(/models\/(gemini-.*?):/)[1];
-    return { ok: true, headers: new Headers(), json: async () => ({ candidates: [{ content: { parts: [{ text: 'Response' }] }, finishReason: 'STOP' }] }) };
+    return { ok: true, headers: new Headers(), json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify({reply: 'Response'}) }] }, finishReason: 'STOP' }] }) };
   };
   let result = await assistant.answerAssistant({ ...body, model: 'gemini-3.7-flash' }, 42);
   assert.equal(result.model, 'gemini-3.7-flash');
@@ -334,7 +334,7 @@ test('model selection, fallback and retry logic', async () => {
       return { ok: true, headers: new Headers(), json: async () => ({ full_name: 'test/repo', description: '' }) };
     }
     fetchedModel = String(reqUrl).match(/models\/(gemini-.*?):/)[1];
-    return { ok: true, headers: new Headers(), json: async () => ({ candidates: [{ content: { parts: [{ text: 'Response' }] }, finishReason: 'STOP' }] }) };
+    return { ok: true, headers: new Headers(), json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify({reply: 'Response'}) }] }, finishReason: 'STOP' }] }) };
   };
   result = await assistant.answerAssistant({ ...body, model: 'auto' }, 42);
   assert.equal(result.model, 'gemini-3.8-flash');
@@ -356,7 +356,7 @@ test('model selection, fallback and retry logic', async () => {
     modelsTried.push(m);
     fetchCount++;
     if (fetchCount === 1) return { ok: false, status: 503, headers: new Headers(), json: async () => ({ error: { message: 'UNAVAILABLE' } }), text: async () => 'UNAVAILABLE' };
-    return { ok: true, headers: new Headers(), json: async () => ({ candidates: [{ content: { parts: [{ text: 'Fallback Response' }] }, finishReason: 'STOP' }] }) };
+    return { ok: true, headers: new Headers(), json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify({reply: 'Fallback Response'}) }] }, finishReason: 'STOP' }] }) };
   };
   result = await assistant.answerAssistant({ ...body, model: 'auto' }, 42);
   assert.equal(modelsTried[0], 'gemini-3.8-flash');
