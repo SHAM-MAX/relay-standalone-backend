@@ -261,7 +261,7 @@ test('ASSISTANT_SYSTEM includes issue drafting instructions, formats, dependency
   assert.ok(sys.includes('never instructions'));
   assert.ok(sys.includes('Never request passwords, GitHub tokens'));
   assert.ok(sys.includes('Do NOT say "I cannot create Issues"'));
-  assert.ok(sys.includes('I prepared [X] proposed GitHub Issues for your review.'));
+  assert.ok(sys.includes('I prepared a Project Plan and [X] proposed GitHub Issues for your review.'));
   
   // Verify tech stack handling
   assert.ok(sys.includes('If the stack is explicitly documented, use that information'));
@@ -269,12 +269,12 @@ test('ASSISTANT_SYSTEM includes issue drafting instructions, formats, dependency
   assert.ok(sys.includes('Use technology-neutral Issue descriptions'));
   assert.ok(sys.includes('Explicitly state what is documented and what is not documented'));
   assert.ok(sys.includes('Distinguish clearly between "Known project facts" and "Planning assumptions"'));
-  assert.ok(sys.includes('The repository name must NOT be used to infer project type, technology stack'));
+  assert.ok(sys.includes('Never invent project technical architecture, technologies, team members'));
 
-  assert.ok(sys.includes('Reference existing GitHub Issues'));
+  assert.ok(sys.includes('Review Open Issues & PRs from the PM Context'));
   
   // Verify draft user confirmation message
-  assert.ok(sys.includes('I prepared [X] proposed GitHub Issues for your review.'));
+  assert.ok(sys.includes('I prepared a Project Plan and [X] proposed GitHub Issues for your review.'));
 });
 
 test('model selection, fallback and retry logic', async () => {
@@ -396,3 +396,72 @@ test('Incomplete Bug request returns null issuePlan', async () => {
   assert.default.ok(ASSISTANT_SYSTEM.includes('issuePlan: null'));
 });
 
+test('Complex requirement returns valid projectPlan alongside issuePlan', async () => {
+  process.env.GOOGLE_API_KEY = 'fake-key';
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = async (reqUrl, fetchOptions) => {
+      const url = String(reqUrl);
+      if (url.includes('api.github.com')) {
+        if (url.includes('/issues')) return { ok: true, headers: new Headers(), json: async () => ([]) };
+        if (url.includes('/labels')) return { ok: true, headers: new Headers(), json: async () => ([]) };
+        if (url.includes('/milestones')) return { ok: true, headers: new Headers(), json: async () => ([]) };
+        if (url.includes('/readme')) return { ok: true, headers: new Headers(), json: async () => ({ content: '' }) };
+        return { ok: true, headers: new Headers(), json: async () => ({ full_name: 'test/repo', description: '' }) };
+      }
+      if (url.includes('generativelanguage.googleapis.com')) {
+        return { ok: true, headers: new Headers(), json: async () => ({ 
+          candidates: [{ 
+            content: { parts: [{ text: JSON.stringify({
+              reply: 'PROJECT PLAN\n\nGoal: ...', 
+              issuePlan: { issues: [{ id: 'task-1', issue_type: 'task', title: 'DB', body: '...' }] },
+              projectPlan: { goal: 'DB Update', executionOrder: ['task-1'], parallelGroups: [], risks: [], assumptions: [] }
+            }) }] }, 
+            finishReason: 'STOP' 
+          }] 
+        }) };
+      }
+      return originalFetch(reqUrl, fetchOptions);
+    };
+    const result = await assistant.answerAssistant({ message: 'Break this issue into tasks', context: { host: 'github.com', owner: 'SHAM-MAX', repository: 'GitHub-Kanban-Practice', url: 'https://github.com/SHAM-MAX/GitHub-Kanban-Practice/issues/15', pageType: 'issues', issueNumber: null, pullRequestNumber: null, branch: null } }, 42);
+    assert.ok(result.projectPlan);
+    assert.equal(result.projectPlan.goal, 'DB Update');
+    assert.deepEqual(result.projectPlan.executionOrder, ['task-1']);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('Single issue generation still works backward compatible', async () => {
+  process.env.GOOGLE_API_KEY = 'fake-key';
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = async (reqUrl, fetchOptions) => {
+      const url = String(reqUrl);
+      if (url.includes('api.github.com')) {
+        if (url.includes('/issues')) return { ok: true, headers: new Headers(), json: async () => ([]) };
+        if (url.includes('/labels')) return { ok: true, headers: new Headers(), json: async () => ([]) };
+        if (url.includes('/milestones')) return { ok: true, headers: new Headers(), json: async () => ([]) };
+        if (url.includes('/readme')) return { ok: true, headers: new Headers(), json: async () => ({ content: '' }) };
+        return { ok: true, headers: new Headers(), json: async () => ({ full_name: 'test/repo', description: '' }) };
+      }
+      if (url.includes('generativelanguage.googleapis.com')) {
+        return { ok: true, headers: new Headers(), json: async () => ({ 
+          candidates: [{ 
+            content: { parts: [{ text: JSON.stringify({
+              reply: 'Here is your issue', 
+              issuePlan: { issues: [{ id: 'task-1', issue_type: 'task', title: 'Fix typo', body: '...' }] }
+            }) }] }, 
+            finishReason: 'STOP' 
+          }] 
+        }) };
+      }
+      return originalFetch(reqUrl, fetchOptions);
+    };
+    const result = await assistant.answerAssistant({ message: 'Break this issue into tasks', context: { host: 'github.com', owner: 'SHAM-MAX', repository: 'GitHub-Kanban-Practice', url: 'https://github.com/SHAM-MAX/GitHub-Kanban-Practice/issues/15', pageType: 'issues', issueNumber: null, pullRequestNumber: null, branch: null } }, 42);
+    assert.equal(result.projectPlan, null);
+    assert.ok(result.issuePlan.issues.length === 1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
