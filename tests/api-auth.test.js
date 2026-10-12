@@ -172,6 +172,58 @@ test('OAuth Exchange API Tests', async (t) => {
     }
   });
 
+  await t.test('10. GET /github/login allows configured extension origin before authentication', async () => {
+    const res = await fetch(`${baseUrl}/github/login`, {
+      method: 'GET',
+      headers: {
+        'Origin': validOrigin
+      }
+    });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.headers.get('access-control-allow-origin'), validOrigin);
+    assert.strictEqual(res.headers.get('access-control-allow-credentials'), 'true');
+    const data = await res.json();
+    assert.strictEqual(typeof data.state, 'string');
+    assert.strictEqual(data.clientId, 'test-client-id');
+  });
+
+  await t.test('11. OPTIONS /github/login preflight succeeds for configured extension origin', async () => {
+    const res = await fetch(`${baseUrl}/github/login`, {
+      method: 'OPTIONS',
+      headers: {
+        'Origin': validOrigin
+      }
+    });
+    assert.strictEqual(res.status, 204);
+    assert.strictEqual(res.headers.get('access-control-allow-origin'), validOrigin);
+  });
+
+  await t.test('12. GET /github/login rejects unauthorized extension origin', async () => {
+    const unauthorizedOrigin = `chrome-extension://${'b'.repeat(32)}`;
+    const res = await fetch(`${baseUrl}/github/login`, {
+      method: 'GET',
+      headers: {
+        'Origin': unauthorizedOrigin
+      }
+    });
+    assert.strictEqual(res.status, 403);
+    const data = await res.json();
+    assert.strictEqual(data.error, 'Origin not allowed');
+  });
+
+  await t.test('13. OPTIONS /github/login preflight rejects unauthorized extension origin', async () => {
+    const unauthorizedOrigin = `chrome-extension://${'b'.repeat(32)}`;
+    const res = await fetch(`${baseUrl}/github/login`, {
+      method: 'OPTIONS',
+      headers: {
+        'Origin': unauthorizedOrigin
+      }
+    });
+    assert.strictEqual(res.status, 403);
+    const data = await res.json();
+    assert.strictEqual(data.error, 'Origin not allowed');
+  });
+
   t.after(async () => {
     if (server) {
       server.close();

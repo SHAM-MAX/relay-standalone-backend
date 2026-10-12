@@ -10,10 +10,10 @@ const router = express.Router();
 router.use(async (req, res, next) => {
   const origin = header(req, 'origin');
   let approvedOrigin = await hasOrigin(origin);
-  const isExchange = req.path === '/github/exchange';
+  const isBootstrapAuth = req.path === '/github/login' || req.path === '/github/exchange';
   const expectedOrigin = process.env.RELAY_EXTENSION_ID ? `chrome-extension://${process.env.RELAY_EXTENSION_ID}` : null;
 
-  if (isExchange && expectedOrigin && origin === expectedOrigin) {
+  if (isBootstrapAuth && expectedOrigin && origin === expectedOrigin) {
     approvedOrigin = true;
   }
 
