@@ -2,7 +2,7 @@ import express from 'express';
 import { createOAuthState, consumeOAuthState, createSession, revokeSession } from '../lib/session.js';
 import { verifyGitHubToken, upsertUser, parseCookies } from '../lib/auth.js';
 import db from '../lib/db.js';
-import { hasOrigin, corsHeaders, header } from '../lib/assistant-access.js';
+import { hasOrigin, corsHeaders, header, extensionOrigin } from '../lib/assistant-access.js';
 import crypto from 'crypto';
 
 const router = express.Router();
@@ -11,7 +11,7 @@ router.use(async (req, res, next) => {
   const origin = header(req, 'origin');
   let approvedOrigin = await hasOrigin(origin);
   const isBootstrapAuth = req.path === '/github/login' || req.path === '/github/exchange';
-  const expectedOrigin = process.env.RELAY_EXTENSION_ID ? `chrome-extension://${process.env.RELAY_EXTENSION_ID}` : null;
+  const expectedOrigin = extensionOrigin(process.env.RELAY_EXTENSION_ID?.trim());
 
   if (isBootstrapAuth && expectedOrigin && origin === expectedOrigin) {
     approvedOrigin = true;
@@ -44,7 +44,7 @@ function getEnvClientId() {
 }
 
 function getEnvRedirectUri() {
-  const extId = process.env.RELAY_EXTENSION_ID;
+  const extId = process.env.RELAY_EXTENSION_ID?.trim();
   if (!extId) throw new Error('SERVER_CONFIG_ERROR');
   return `https://${extId}.chromiumapp.org/`;
 }
@@ -70,7 +70,11 @@ function encryptToken(token) {
 router.get('/github/login', async (req, res) => {
   try {
     const state = await createOAuthState();
-    res.json({ state, clientId: getEnvClientId() });
+    res.json({
+      state,
+      clientId: getEnvClientId(),
+      redirectUri: getEnvRedirectUri()
+    });
   } catch (error) {
     if (error.message === 'SERVER_CONFIG_ERROR') {
       return res.status(500).json({ error: 'Server configuration error' });
@@ -86,6 +90,12 @@ router.post('/github/exchange', async (req, res) => {
       return res.status(400).json({ error: 'Missing code or state' });
     }
 
+    const expectedRedirectUri = getEnvRedirectUri();
+    const clientRedirectUri = req.body.redirect_uri || req.body.redirectUri;
+    if (clientRedirectUri && clientRedirectUri !== expectedRedirectUri) {
+      return res.status(400).json({ error: 'Redirect URI mismatch' });
+    }
+
     await consumeOAuthState(state);
 
     const tokenResponse = await fetch('https://github.com/login/oauth/access_token', {
@@ -97,7 +107,7 @@ router.post('/github/exchange', async (req, res) => {
       body: JSON.stringify({
         client_id: getEnvClientId(),
         client_secret: getEnvClientSecret(),
-        redirect_uri: getEnvRedirectUri(),
+        redirect_uri: expectedRedirectUri,
         code
       })
     });
@@ -121,7 +131,7 @@ router.post('/github/exchange', async (req, res) => {
     const sessionId = await createSession(user.id);
 
     const origin = header(req, 'origin');
-    const expectedOrigin = process.env.RELAY_EXTENSION_ID ? `chrome-extension://${process.env.RELAY_EXTENSION_ID}` : null;
+    const expectedOrigin = extensionOrigin(process.env.RELAY_EXTENSION_ID?.trim());
     if (expectedOrigin && origin === expectedOrigin) {
       await db.query('INSERT INTO pm_extension_origins (origin) VALUES ($1) ON CONFLICT (origin) DO UPDATE SET updated_at = now()', [origin]);
     }

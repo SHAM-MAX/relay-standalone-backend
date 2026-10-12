@@ -110,6 +110,11 @@ test('OAuth Exchange API Tests', async (t) => {
     const cookies = res.headers.get('set-cookie');
     assert.ok(cookies);
     assert.ok(cookies.includes('relay_pm_session='));
+
+    // Verify origin was recorded into pm_extension_origins
+    const originCheck = await db.query('SELECT origin FROM pm_extension_origins WHERE origin = $1', [validOrigin]);
+    assert.strictEqual(originCheck.rows.length, 1);
+    assert.strictEqual(originCheck.rows[0].origin, validOrigin);
   });
 
   await t.test('5. Missing GITHUB_CLIENT_ID (missing config)', async () => {
@@ -185,6 +190,7 @@ test('OAuth Exchange API Tests', async (t) => {
     const data = await res.json();
     assert.strictEqual(typeof data.state, 'string');
     assert.strictEqual(data.clientId, 'test-client-id');
+    assert.strictEqual(data.redirectUri, `https://${process.env.RELAY_EXTENSION_ID}.chromiumapp.org/`);
   });
 
   await t.test('11. OPTIONS /github/login preflight succeeds for configured extension origin', async () => {
@@ -222,6 +228,19 @@ test('OAuth Exchange API Tests', async (t) => {
     assert.strictEqual(res.status, 403);
     const data = await res.json();
     assert.strictEqual(data.error, 'Origin not allowed');
+  });
+
+  await t.test('14. POST /github/exchange rejects mismatched redirect_uri', async () => {
+    process.env.TOKEN_ENCRYPTION_KEY = crypto.randomBytes(32).toString('hex');
+    const state = await createOAuthState();
+    const res = await makeExchangeReq({
+      code: 'valid-code',
+      state,
+      redirect_uri: 'https://wrong-extension-id.chromiumapp.org/'
+    });
+    assert.strictEqual(res.status, 400);
+    const data = await res.json();
+    assert.strictEqual(data.error, 'Redirect URI mismatch');
   });
 
   t.after(async () => {

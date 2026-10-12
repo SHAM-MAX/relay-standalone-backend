@@ -143,6 +143,60 @@ test('Repositories API Tests', async (t) => {
     global.fetch = originalFetch;
   });
 
+  await t.test('6. Chrome extension origin authorization and CORS', async () => {
+    const extId = 'e'.repeat(32);
+    const configuredOrigin = `chrome-extension://${extId}`;
+    const unapprovedOrigin = `chrome-extension://${'f'.repeat(32)}`;
+    process.env.RELAY_EXTENSION_ID = extId;
+
+    // A. OPTIONS preflight from configured extension origin succeeds
+    const { req: optReq, res: optRes } = createMockReqRes({
+      origin: configuredOrigin,
+      'access-control-request-method': 'GET',
+      'access-control-request-headers': 'content-type'
+    }, 'OPTIONS');
+    await repositoriesEndpoint(optReq, optRes);
+    assert.strictEqual(optRes.statusCode, 204);
+    assert.strictEqual(optRes.headers['Access-Control-Allow-Origin'], configuredOrigin);
+    assert.strictEqual(optRes.headers['Access-Control-Allow-Credentials'], 'true');
+
+    // B. Authorized extension origin with valid session succeeds
+    const originalFetch = global.fetch;
+    global.fetch = async () => ({
+      ok: true,
+      json: async () => [{ id: 1, name: 'ext-repo', full_name: 'user1/ext-repo', html_url: 'https://github.com/user1/ext-repo', private: false, owner: { login: 'user1' } }]
+    });
+
+    const { req: extReq, res: extRes } = createMockReqRes({
+      origin: configuredOrigin,
+      cookie: `relay_pm_session=${validSessionId}`
+    });
+    await repositoriesEndpoint(extReq, extRes);
+    assert.strictEqual(extRes.statusCode, 200);
+    assert.strictEqual(extRes.headers['Access-Control-Allow-Origin'], configuredOrigin);
+    assert.strictEqual(extRes.jsonData.repositories.length, 1);
+    assert.strictEqual(extRes.jsonData.repositories[0].name, 'ext-repo');
+
+    // C. Authorized extension origin without session returns 401 with CORS headers
+    const { req: noAuthReq, res: noAuthRes } = createMockReqRes({
+      origin: configuredOrigin
+    });
+    await repositoriesEndpoint(noAuthReq, noAuthRes);
+    assert.strictEqual(noAuthRes.statusCode, 401);
+    assert.strictEqual(noAuthRes.jsonData.code, 'UNAUTHORIZED');
+    assert.strictEqual(noAuthRes.headers['Access-Control-Allow-Origin'], configuredOrigin);
+
+    // D. Unauthorized extension origin returns 403 EXTENSION_NOT_CONNECTED
+    const { req: unauthReq, res: unauthRes } = createMockReqRes({
+      origin: unapprovedOrigin
+    });
+    await repositoriesEndpoint(unauthReq, unauthRes);
+    assert.strictEqual(unauthRes.statusCode, 403);
+    assert.strictEqual(unauthRes.jsonData.code, 'EXTENSION_NOT_CONNECTED');
+
+    global.fetch = originalFetch;
+  });
+
   await t.test('Cleanup', async () => {
     await db.closePool().catch(() => {});
     process.env = originalEnv;

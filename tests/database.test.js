@@ -51,6 +51,25 @@ test('Database Connection Manager & Health Checks', async (t) => {
     assert.equal(res.rows[0].num, 123);
     client.release();
   });
+
+  await t.test('4. getSslConfig detects remote hosts vs local hosts correctly', async () => {
+    const { getSslConfig } = await import('../lib/db.js');
+    // Local hostnames without explicit SSL should not require SSL
+    assert.equal(getSslConfig('postgres://user:pass@localhost:5432/db'), false);
+    assert.equal(getSslConfig('postgres://user:pass@127.0.0.1:5432/db'), false);
+    assert.equal(getSslConfig('postgres://user:pass@::1:5432/db'), false);
+
+    // Remote cloud hostnames should automatically configure SSL with rejectUnauthorized: false
+    const remoteSsl = getSslConfig('postgres://user:pass@dpg-xxxx.oregon-postgres.render.com/db');
+    assert.deepEqual(remoteSsl, { rejectUnauthorized: false });
+
+    // Explicit DATABASE_SSL=false overrides even remote host
+    const prevSsl = process.env.DATABASE_SSL;
+    process.env.DATABASE_SSL = 'false';
+    assert.equal(getSslConfig('postgres://user:pass@dpg-xxxx.oregon-postgres.render.com/db'), false);
+    if (prevSsl === undefined) delete process.env.DATABASE_SSL;
+    else process.env.DATABASE_SSL = prevSsl;
+  });
 });
 
 test('Versioned Database Migrations', async (t) => {

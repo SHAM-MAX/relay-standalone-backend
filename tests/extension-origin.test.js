@@ -37,6 +37,17 @@ test('OAuth Extension Origin Registration', async (t) => {
     assert.strictEqual(await hasOrigin(validOrigin2), true);
   });
 
+  await t.test('5. Configured RELAY_EXTENSION_ID is approved', async () => {
+    const prevEnv = process.env.RELAY_EXTENSION_ID;
+    try {
+      process.env.RELAY_EXTENSION_ID = '  ' + 'c'.repeat(32) + '  ';
+      assert.strictEqual(await hasOrigin('chrome-extension://' + 'c'.repeat(32)), true);
+      assert.strictEqual(await hasOrigin('chrome-extension://' + 'd'.repeat(32)), false);
+    } finally {
+      process.env.RELAY_EXTENSION_ID = prevEnv;
+    }
+  });
+
   await t.test('Cleanup', async () => {
     await db.closePool().catch(() => {});
   });
