@@ -15,12 +15,17 @@ test('Repositories API Tests', async (t) => {
   process.env.RELAY_ORIGIN = 'https://relay-ai-project.hatchable.site';
 
   const createMockReqRes = (headers = {}, method = 'GET') => {
+    const finalHeaders = {
+      'origin': process.env.RELAY_ORIGIN,
+      ...headers
+    };
+    if (headers && 'origin' in headers && headers.origin === undefined) {
+      delete finalHeaders.origin;
+    }
+
     const req = {
       method,
-      headers: {
-        'origin': process.env.RELAY_ORIGIN,
-        ...headers
-      }
+      headers: finalHeaders
     };
     const res = {
       headers: {},
@@ -193,6 +198,43 @@ test('Repositories API Tests', async (t) => {
     await repositoriesEndpoint(unauthReq, unauthRes);
     assert.strictEqual(unauthRes.statusCode, 403);
     assert.strictEqual(unauthRes.jsonData.code, 'EXTENSION_NOT_CONNECTED');
+
+    global.fetch = originalFetch;
+  });
+
+  await t.test('7. Omitted Origin header (direct/extension GET) handling', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = async () => ({
+      ok: true,
+      json: async () => [{ id: 42, name: 'no-origin-repo', full_name: 'user1/no-origin-repo', html_url: 'https://github.com/user1/no-origin-repo', private: false, owner: { login: 'user1' } }]
+    });
+
+    // A. Request without Origin header but with valid session cookie succeeds (200 OK)
+    const { req: noOriginAuthedReq, res: noOriginAuthedRes } = createMockReqRes({
+      origin: undefined,
+      cookie: `relay_pm_session=${validSessionId}`
+    });
+    await repositoriesEndpoint(noOriginAuthedReq, noOriginAuthedRes);
+    assert.strictEqual(noOriginAuthedRes.statusCode, 200);
+    assert.strictEqual(noOriginAuthedRes.jsonData.repositories.length, 1);
+    assert.strictEqual(noOriginAuthedRes.jsonData.repositories[0].name, 'no-origin-repo');
+
+    // B. Request without Origin header and without session cookie returns 401 UNAUTHORIZED (not 403)
+    const { req: noOriginUnauthReq, res: noOriginUnauthRes } = createMockReqRes({
+      origin: undefined
+    });
+    await repositoriesEndpoint(noOriginUnauthReq, noOriginUnauthRes);
+    assert.strictEqual(noOriginUnauthRes.statusCode, 401);
+    assert.strictEqual(noOriginUnauthRes.jsonData.code, 'UNAUTHORIZED');
+
+    // C. Unauthorized web origin is rejected with 403 EXTENSION_NOT_CONNECTED even with cookie
+    const { req: badWebReq, res: badWebRes } = createMockReqRes({
+      origin: 'https://unauthorized-site.com',
+      cookie: `relay_pm_session=${validSessionId}`
+    });
+    await repositoriesEndpoint(badWebReq, badWebRes);
+    assert.strictEqual(badWebRes.statusCode, 403);
+    assert.strictEqual(badWebRes.jsonData.code, 'EXTENSION_NOT_CONNECTED');
 
     global.fetch = originalFetch;
   });

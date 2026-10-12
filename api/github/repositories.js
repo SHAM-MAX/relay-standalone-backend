@@ -1,4 +1,3 @@
-
 import { RELAY_ORIGIN, header, hasOrigin, corsHeaders } from '../../lib/assistant-access.js';
 import { authenticateRequest, decryptToken } from '../../lib/auth.js';
 
@@ -22,11 +21,9 @@ export default async function (req, res) {
     return res.status(204).send('');
   }
 
-  if (!approvedOrigin) {
+  if (origin && !approvedOrigin) {
     return res.status(403).json({ error: 'Use Connect Relay in the panel to approve this extension.', code: 'EXTENSION_NOT_CONNECTED' });
   }
-
-
 
   try {
     let user;
