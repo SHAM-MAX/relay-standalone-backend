@@ -1,0 +1,150 @@
+import test from 'node:test';
+import assert from 'node:assert';
+import crypto from 'node:crypto';
+import repositoriesEndpoint from '../api/github/repositories.js';
+import db from '../lib/db.js';
+import { runMigrations } from '../lib/migrator.js';
+import { upsertUser } from '../lib/auth.js';
+import { createSession } from '../lib/session.js';
+
+test('Repositories API Tests', async (t) => {
+  await runMigrations();
+
+  const originalEnv = { ...process.env };
+  process.env.TOKEN_ENCRYPTION_KEY = crypto.randomBytes(32).toString('hex');
+  process.env.RELAY_ORIGIN = 'https://relay-ai-project.hatchable.site';
+
+  const createMockReqRes = (headers = {}, method = 'GET') => {
+    const req = {
+      method,
+      headers: {
+        'origin': process.env.RELAY_ORIGIN,
+        ...headers
+      }
+    };
+    const res = {
+      headers: {},
+      statusCode: 200,
+      jsonData: null,
+      setHeader(k, v) { this.headers[k] = v; },
+      status(code) { this.statusCode = code; return this; },
+      json(data) { this.jsonData = data; return this; },
+      send(data) { this.jsonData = data; return this; }
+    };
+    return { req, res };
+  };
+
+  const createEncryptedToken = (tokenStr) => {
+    const key = Buffer.from(process.env.TOKEN_ENCRYPTION_KEY, 'hex');
+    const iv = crypto.randomBytes(16);
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+    let encryptedText = cipher.update(tokenStr, 'utf8', 'hex');
+    encryptedText += cipher.final('hex');
+    const authTag = cipher.getAuthTag().toString('hex');
+    return {
+      encrypted_token: `${encryptedText}:${authTag}`,
+      token_iv: iv.toString('hex')
+    };
+  };
+
+  let validSessionId;
+  let noTokenSessionId;
+  let invalidTokenSessionId;
+
+  await t.test('Setup users and sessions', async () => {
+    // 1. User with valid token
+    const { encrypted_token: validEnc, token_iv: validIv } = createEncryptedToken('valid-github-token');
+    const user1 = await upsertUser('repo-gh-1', 'user1', validEnc, validIv);
+    validSessionId = await createSession(user1.id);
+
+    // 2. User with missing token
+    const user2 = await upsertUser('repo-gh-2', 'user2');
+    noTokenSessionId = await createSession(user2.id);
+
+    // 3. User with invalid encrypted token (cannot be decrypted)
+    const user3 = await upsertUser('repo-gh-3', 'user3', 'invalid-format-token', 'invalid-iv');
+    invalidTokenSessionId = await createSession(user3.id);
+  });
+
+  await t.test('1. Missing session', async () => {
+    const { req, res } = createMockReqRes();
+    await repositoriesEndpoint(req, res);
+    assert.strictEqual(res.statusCode, 401);
+    assert.strictEqual(res.jsonData.code, 'UNAUTHORIZED');
+  });
+
+  await t.test('2. Missing token', async () => {
+    const { req, res } = createMockReqRes({ cookie: `relay_pm_session=${noTokenSessionId}` });
+    await repositoriesEndpoint(req, res);
+    assert.strictEqual(res.statusCode, 401);
+    assert.strictEqual(res.jsonData.code, 'MISSING_GITHUB_TOKEN');
+  });
+
+  await t.test('3. Invalid encrypted token', async () => {
+    const { req, res } = createMockReqRes({ cookie: `relay_pm_session=${invalidTokenSessionId}` });
+    await repositoriesEndpoint(req, res);
+    assert.strictEqual(res.statusCode, 401);
+    assert.strictEqual(res.jsonData.code, 'INVALID_GITHUB_TOKEN');
+  });
+
+  await t.test('4. Successful repository fetch', async () => {
+    const { req, res } = createMockReqRes({ cookie: `relay_pm_session=${validSessionId}` });
+
+    const originalFetch = global.fetch;
+    global.fetch = async (url, options) => {
+      assert.strictEqual(url, 'https://api.github.com/user/repos?sort=updated&per_page=100');
+      assert.strictEqual(options.headers.Authorization, 'Bearer valid-github-token');
+      return {
+        ok: true,
+        json: async () => ([
+          {
+            id: 1,
+            name: 'test-repo',
+            full_name: 'user1/test-repo',
+            html_url: 'https://github.com/user1/test-repo',
+            private: true,
+            owner: { login: 'user1' }
+          }
+        ])
+      };
+    };
+
+    await repositoriesEndpoint(req, res);
+    global.fetch = originalFetch;
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.jsonData.repositories.length, 1);
+    assert.strictEqual(res.jsonData.repositories[0].name, 'test-repo');
+  });
+
+  await t.test('5. GitHub API failures', async () => {
+    const { req, res } = createMockReqRes({ cookie: `relay_pm_session=${validSessionId}` });
+
+    const originalFetch = global.fetch;
+
+    // Test 401
+    global.fetch = async () => ({ ok: false, status: 401 });
+    await repositoriesEndpoint(req, res);
+    assert.strictEqual(res.statusCode, 401);
+    assert.strictEqual(res.jsonData.code, 'GITHUB_API_ERROR');
+
+    // Test 403 (Rate Limit or Forbidden)
+    global.fetch = async () => ({ ok: false, status: 403 });
+    await repositoriesEndpoint(req, res);
+    assert.strictEqual(res.statusCode, 403);
+    assert.strictEqual(res.jsonData.code, 'GITHUB_API_ERROR');
+
+    // Test 500
+    global.fetch = async () => ({ ok: false, status: 500 });
+    await repositoriesEndpoint(req, res);
+    assert.strictEqual(res.statusCode, 500);
+    assert.strictEqual(res.jsonData.code, 'GITHUB_API_ERROR');
+
+    global.fetch = originalFetch;
+  });
+
+  await t.test('Cleanup', async () => {
+    await db.closePool().catch(() => {});
+    process.env = originalEnv;
+  });
+});

@@ -1,15 +1,37 @@
 import { test, mock } from 'node:test';
 import assert from 'node:assert';
 import issuesEndpoint from '../api/github/issues.js';
+import { upsertUser } from '../lib/auth.js';
+import { createSession } from '../lib/session.js';
+import crypto from 'crypto';
+import { runMigrations } from '../lib/migrator.js';
+import db from '../lib/db.js';
 
 test('Issues API Tests', async (t) => {
+  await runMigrations();
+
+  const validKey = '0000000000000000000000000000000000000000000000000000000000000000';
+  const oldKey = process.env.TOKEN_ENCRYPTION_KEY;
+  process.env.TOKEN_ENCRYPTION_KEY = validKey;
+
+  const iv = crypto.randomBytes(12).toString('hex');
+  const cipher = crypto.createCipheriv('aes-256-gcm', Buffer.from(validKey, 'hex'), Buffer.from(iv, 'hex'));
+  let enc = cipher.update('mock-github-token', 'utf8', 'hex');
+  enc += cipher.final('hex');
+  const tag = cipher.getAuthTag().toString('hex');
+  const validTokenString = `${enc}:${tag}`;
+
+  const user = await upsertUser('issues-test-gh', 'issues-tester', validTokenString, iv);
+  const sessionId = await createSession(user.id);
+
   // Helper to mock request/response
   const createMockReqRes = (body, method = 'POST') => {
     const req = {
       method,
       headers: {
         'origin': 'https://relay-ai-project.hatchable.site',
-        'content-type': 'application/json'
+        'content-type': 'application/json',
+        'cookie': `relay_pm_session=${sessionId}`
       },
       body
     };
@@ -26,7 +48,7 @@ test('Issues API Tests', async (t) => {
   };
 
   const oldEnv = process.env.GITHUB_TOKEN;
-  process.env.GITHUB_TOKEN = 'test-token';
+  delete process.env.GITHUB_TOKEN;
 
   await t.test('1. Valid issue creation request', async () => {
     const { req, res } = createMockReqRes({
@@ -90,5 +112,17 @@ test('Issues API Tests', async (t) => {
     assert.ok(res.jsonData.results[1].error.includes('422'));
   });
 
-  process.env.GITHUB_TOKEN = oldEnv;
+  if (oldEnv === undefined) {
+    delete process.env.GITHUB_TOKEN;
+  } else {
+    process.env.GITHUB_TOKEN = oldEnv;
+  }
+
+  if (oldKey === undefined) {
+    delete process.env.TOKEN_ENCRYPTION_KEY;
+  } else {
+    process.env.TOKEN_ENCRYPTION_KEY = oldKey;
+  }
+
+  await db.closePool().catch(() => {});
 });

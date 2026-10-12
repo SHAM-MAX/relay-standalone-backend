@@ -11,6 +11,8 @@ const root = path.resolve(__dirname, '..');
 
 import * as assistant from '../lib/assistant.js';
 import * as access from '../lib/assistant-access.js';
+import db from '../lib/db.js';
+import { runMigrations } from '../lib/migrator.js';
 
 import contextModule from '../../relay-github-extension/context.js';
 const parse = contextModule.parse;
@@ -161,18 +163,20 @@ test('upstream setup/timeout/quota errors are sanitized; raw exceptions never es
   }
 });
 test('anonymous preflight succeeds only for an exact approved origin and headers', async () => {
-  const db = dbFixture();
+  await runMigrations();
+  await db.query('INSERT INTO pm_extension_origins (origin) VALUES ($1) ON CONFLICT (origin) DO NOTHING', [origin]);
   const req = { method:'OPTIONS', headers: { origin, 'access-control-request-method':'POST', 'access-control-request-headers':'content-type' }, member: null };
-  const response = res(); assert.equal(await access.gateAssistant(req,response,db), false);
+  const response = res(); assert.equal(await access.gateAssistant(req,response), false);
   assert.equal(response.statusCode,204); assert.equal(response.headers['access-control-allow-origin'],origin); assert.equal(response.headers['access-control-allow-credentials'],'true');
   for (const change of [{ origin:'https://evil.test' }, { origin:'null' }, { origin:origin + '.evil' }, { origin:'chrome-extension://' + 'b'.repeat(32) }, { 'access-control-request-headers':'authorization' }]) {
-    const response = res(); await access.gateAssistant({ ...req, headers:{ ...req.headers, ...change } },response,db);
+    const response = res(); await access.gateAssistant({ ...req, headers:{ ...req.headers, ...change } },response);
     assert.equal(response.statusCode,403);
     assert.notEqual(response.headers['access-control-allow-origin'],'*');
   }
 });
 test('POST always requires approved extension', async () => {
-  const db = dbFixture();
+  await runMigrations();
+  await db.query('INSERT INTO pm_extension_origins (origin) VALUES ($1) ON CONFLICT (origin) DO NOTHING', [origin]);
   const req = { method:'POST', headers: { origin, 'content-type':'application/json' }, body };
   let response = res(); assert.equal(await access.gateAssistant({ ...req, headers:{ origin: 'chrome-extension://' + 'b'.repeat(32) } },response),false); assert.equal(response.statusCode,403);
   response = res(); assert.equal(await access.gateAssistant({ ...req },response),true);
