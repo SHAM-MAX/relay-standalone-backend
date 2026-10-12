@@ -1,24 +1,30 @@
-import { corsHeaders, validateOrigin } from '../../lib/cors.js';
+import { RELAY_ORIGIN, header, hasOrigin, corsHeaders } from '../../lib/assistant-access.js';
 import projectStore from '../../lib/project-store.js';
 import memberStore from '../../lib/member-store.js';
 import { authorizeProjectAction, authenticateRequest } from '../../lib/auth.js';
 
 export default async function handler(req, res) {
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Vary', 'Origin');
+
+  const origin = header(req, 'origin');
+  const approvedOrigin = origin === RELAY_ORIGIN || await hasOrigin(origin);
+
+  if (approvedOrigin) corsHeaders(res, origin);
+
   if (req.method === 'OPTIONS') {
-    res.writeHead(204, corsHeaders);
-    res.end();
-    return;
+    if (!approvedOrigin) return res.status(403).json({ error: 'Origin not allowed' });
+    return res.status(204).send('');
+  }
+
+  if (!approvedOrigin) {
+    return res.status(403).json({ error: 'Origin not allowed', code: 'EXTENSION_NOT_CONNECTED' });
   }
 
   try {
-    const originValid = await validateOrigin(req, res);
-    if (!originValid) return;
-
-    const { owner, repository } = req.body || {};
+    const { owner, repository } = req.body || req.query || {};
     if (!owner || !repository) {
-      res.writeHead(400, { 'Content-Type': 'application/json', ...corsHeaders });
-      res.end(JSON.stringify({ error: 'Missing owner or repository' }));
-      return;
+      return res.status(400).json({ error: 'Missing owner or repository' });
     }
 
     let project = await projectStore.getProject(owner, repository);
@@ -32,37 +38,29 @@ export default async function handler(req, res) {
     if (req.method === 'POST' && action === 'bootstrap') {
       const user = await authenticateRequest(req);
       const member = await memberStore.bootstrapProjectAdmin(project.id, user);
-      res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders });
-      res.end(JSON.stringify(member));
-      return;
+      return res.status(200).json(member);
     }
 
     if (req.method === 'GET') {
       await authorizeProjectAction(req, project.id, 'Viewer');
       const items = await memberStore.getMembers(project.id);
-      res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders });
-      res.end(JSON.stringify({ items }));
-      return;
+      return res.status(200).json({ items });
     }
 
     if (req.method === 'POST') {
       const user = await authorizeProjectAction(req, project.id, 'Approver');
-      const { githubId, githubUsername, role } = req.body;
+      const { githubId, githubUsername, role } = req.body || {};
       const member = await memberStore.addMember(project.id, githubId, githubUsername, role, user.github_username);
-      res.writeHead(201, { 'Content-Type': 'application/json', ...corsHeaders });
-      res.end(JSON.stringify(member));
-      return;
+      return res.status(201).json(member);
     }
 
     if (req.method === 'PUT') {
       const user = await authorizeProjectAction(req, project.id, 'Approver');
       const targetUserId = pathParts.length > 4 ? pathParts[4] : null;
       if (action === 'role' && targetUserId) {
-        const { role } = req.body;
+        const { role } = req.body || {};
         const member = await memberStore.updateMemberRole(project.id, targetUserId, role, user.github_username);
-        res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders });
-        res.end(JSON.stringify(member));
-        return;
+        return res.status(200).json(member);
       }
     }
 
@@ -71,18 +69,14 @@ export default async function handler(req, res) {
       const targetUserId = action;
       if (targetUserId) {
         await memberStore.removeMember(project.id, targetUserId, user.github_username);
-        res.writeHead(204, corsHeaders);
-        res.end();
-        return;
+        return res.status(204).send('');
       }
     }
 
-    res.writeHead(405, corsHeaders);
-    res.end(JSON.stringify({ error: 'Method Not Allowed' }));
+    return res.status(405).json({ error: 'Method Not Allowed' });
   } catch (error) {
     const status = error.message.includes('not a member') || error.message.includes('Action requires') || error.message.includes('Invalid or expired') || error.message.includes('Missing or invalid') ? 401 : 500;
     if (status === 500) console.error('[Members API Error]:', error);
-    res.writeHead(status, { 'Content-Type': 'application/json', ...corsHeaders });
-    res.end(JSON.stringify({ error: error.message }));
+    return res.status(status).json({ error: error.message });
   }
 }

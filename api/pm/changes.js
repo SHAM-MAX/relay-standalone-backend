@@ -1,47 +1,45 @@
-import { corsHeaders, validateOrigin } from '../../lib/cors.js';
+import { RELAY_ORIGIN, header, hasOrigin, corsHeaders } from '../../lib/assistant-access.js';
 import projectStore from '../../lib/project-store.js';
 import changeStore from '../../lib/change-store.js';
 import { authorizeProjectAction } from '../../lib/auth.js';
 
 export default async function handler(req, res) {
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Vary', 'Origin');
+
+  const origin = header(req, 'origin');
+  const approvedOrigin = origin === RELAY_ORIGIN || await hasOrigin(origin);
+
+  if (approvedOrigin) corsHeaders(res, origin);
+
   if (req.method === 'OPTIONS') {
-    res.writeHead(204, corsHeaders);
-    res.end();
-    return;
+    if (!approvedOrigin) return res.status(403).json({ error: 'Origin not allowed' });
+    return res.status(204).send('');
   }
 
-  if (!validateOrigin(req)) {
-    res.writeHead(403, corsHeaders);
-    res.end(JSON.stringify({ error: 'Forbidden' }));
-    return;
+  if (!approvedOrigin) {
+    return res.status(403).json({ error: 'Origin not allowed', code: 'EXTENSION_NOT_CONNECTED' });
   }
 
   try {
-    const { owner, repository } = req.body || req.query;
+    const { owner, repository } = req.body || req.query || {};
     if (!owner || !repository) {
-      res.writeHead(400, corsHeaders);
-      res.end(JSON.stringify({ error: 'Missing owner or repository' }));
-      return;
+      return res.status(400).json({ error: 'Missing owner or repository' });
     }
 
     const project = await projectStore.getProject(owner, repository);
     if (!project) {
-      res.writeHead(404, corsHeaders);
-      res.end(JSON.stringify({ error: 'Project not found' }));
-      return;
+      return res.status(404).json({ error: 'Project not found' });
     }
 
     if (req.method === 'GET') {
       try {
         await authorizeProjectAction(req, project.id, 'Viewer');
         const items = await changeStore.getChangeRequests(project.id);
-        res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders });
-        res.end(JSON.stringify({ items }));
+        return res.status(200).json({ items });
       } catch (authErr) {
-        res.writeHead(401, { 'Content-Type': 'application/json', ...corsHeaders });
-        res.end(JSON.stringify({ error: authErr.message }));
+        return res.status(401).json({ error: authErr.message });
       }
-      return;
     }
 
     if (req.method === 'POST') {
@@ -52,31 +50,25 @@ export default async function handler(req, res) {
       if (action === 'approve' && id) {
         try {
           const user = await authorizeProjectAction(req, project.id, 'Approver');
-          const { notes } = req.body;
+          const { notes } = req.body || {};
           const change = await changeStore.approveChangeRequest(project.id, id, user.github_username, notes);
-          res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders });
-          res.end(JSON.stringify(change));
+          return res.status(200).json(change);
         } catch (authErr) {
-          res.writeHead(401, { 'Content-Type': 'application/json', ...corsHeaders });
-          res.end(JSON.stringify({ error: authErr.message }));
+          return res.status(401).json({ error: authErr.message });
         }
-        return;
       }
 
       try {
         const user = await authorizeProjectAction(req, project.id, 'Manager');
-        const { type, description, reason, requester, affectedFunctionality, impactScope, impactSchedule, impactDependencies, impactEffort, clientReferenceId } = req.body;
+        const { type, description, reason, requester, affectedFunctionality, impactScope, impactSchedule, impactDependencies, impactEffort, clientReferenceId } = req.body || {};
         const change = await changeStore.createChangeRequest(project.id, {
           type, description, reason, requester, affectedFunctionality, impactScope, impactSchedule, impactDependencies, impactEffort
         }, clientReferenceId);
 
-        res.writeHead(201, { 'Content-Type': 'application/json', ...corsHeaders });
-        res.end(JSON.stringify(change));
+        return res.status(201).json(change);
       } catch (authErr) {
-        res.writeHead(401, { 'Content-Type': 'application/json', ...corsHeaders });
-        res.end(JSON.stringify({ error: authErr.message }));
+        return res.status(401).json({ error: authErr.message });
       }
-      return;
     }
 
     if (req.method === 'PUT') {
@@ -87,23 +79,18 @@ export default async function handler(req, res) {
       if (action === 'status' && id) {
         try {
           const user = await authorizeProjectAction(req, project.id, 'Manager');
-          const { status, notes } = req.body;
+          const { status, notes } = req.body || {};
           const change = await changeStore.updateChangeRequestStatus(project.id, id, status, user.github_username, notes);
-          res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders });
-          res.end(JSON.stringify(change));
+          return res.status(200).json(change);
         } catch (authErr) {
-          res.writeHead(401, { 'Content-Type': 'application/json', ...corsHeaders });
-          res.end(JSON.stringify({ error: authErr.message }));
+          return res.status(401).json({ error: authErr.message });
         }
-        return;
       }
     }
 
-    res.writeHead(405, corsHeaders);
-    res.end(JSON.stringify({ error: 'Method Not Allowed' }));
+    return res.status(405).json({ error: 'Method Not Allowed' });
   } catch (error) {
     console.error('Changes API Error:', error);
-    res.writeHead(500, corsHeaders);
-    res.end(JSON.stringify({ error: error.message || 'Internal Server Error' }));
+    return res.status(500).json({ error: error.message || 'Internal Server Error' });
   }
 }
