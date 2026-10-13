@@ -236,6 +236,24 @@ test('Repositories API Tests', async (t) => {
     assert.strictEqual(badWebRes.statusCode, 403);
     assert.strictEqual(badWebRes.jsonData.code, 'EXTENSION_NOT_CONNECTED');
 
+    // D. Extension request with session cookie in Cookie header succeeds without weakening authorization
+    const { req: extCookieReq, res: extCookieRes } = createMockReqRes({
+      origin: undefined,
+      cookie: `relay_pm_session=${validSessionId}; other_cookie=xyz`
+    });
+    await repositoriesEndpoint(extCookieReq, extCookieRes);
+    assert.strictEqual(extCookieRes.statusCode, 200);
+    assert.strictEqual(extCookieRes.jsonData.repositories.length, 1);
+
+    // E. Missing cookie is strictly rejected and never treated as authenticated
+    const { req: strictReq, res: strictRes } = createMockReqRes({
+      origin: undefined,
+      cookie: ''
+    });
+    await repositoriesEndpoint(strictReq, strictRes);
+    assert.strictEqual(strictRes.statusCode, 401);
+    assert.strictEqual(strictRes.jsonData.code, 'UNAUTHORIZED');
+
     global.fetch = originalFetch;
   });
 

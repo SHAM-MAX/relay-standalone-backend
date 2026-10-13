@@ -140,6 +140,7 @@ router.post('/github/exchange', async (req, res) => {
       httpOnly: true,
       secure: true,
       sameSite: 'None',
+      partitioned: true,
       maxAge: 24 * 60 * 60 * 1000,
       path: '/api/'
     });
@@ -166,6 +167,13 @@ router.post('/logout', async (req, res) => {
     if (sessionId) {
       await revokeSession(sessionId);
     }
+    res.clearCookie('relay_pm_session', {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'None',
+      partitioned: true,
+      path: '/api/'
+    });
     res.clearCookie('relay_pm_session', {
       httpOnly: true,
       secure: true,

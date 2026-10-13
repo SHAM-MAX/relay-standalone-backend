@@ -110,6 +110,7 @@ test('OAuth Exchange API Tests', async (t) => {
     const cookies = res.headers.get('set-cookie');
     assert.ok(cookies);
     assert.ok(cookies.includes('relay_pm_session='));
+    assert.ok(cookies.includes('Partitioned'));
 
     // Verify origin was recorded into pm_extension_origins
     const originCheck = await db.query('SELECT origin FROM pm_extension_origins WHERE origin = $1', [validOrigin]);
@@ -241,6 +242,22 @@ test('OAuth Exchange API Tests', async (t) => {
     assert.strictEqual(res.status, 400);
     const data = await res.json();
     assert.strictEqual(data.error, 'Redirect URI mismatch');
+  });
+
+  await t.test('15. POST /logout clears session cookie with Partitioned attribute', async () => {
+    const res = await fetch(`${baseUrl}/logout`, {
+      method: 'POST',
+      headers: {
+        'Origin': validOrigin
+      }
+    });
+    assert.strictEqual(res.status, 200);
+    const data = await res.json();
+    assert.strictEqual(data.ok, true);
+    const setCookie = res.headers.get('set-cookie');
+    assert.ok(setCookie);
+    assert.ok(setCookie.includes('relay_pm_session=;'));
+    assert.ok(setCookie.includes('Partitioned'));
   });
 
   t.after(async () => {
