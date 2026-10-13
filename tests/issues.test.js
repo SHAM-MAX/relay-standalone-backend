@@ -112,6 +112,77 @@ test('Issues API Tests', async (t) => {
     assert.ok(res.jsonData.results[1].error.includes('422'));
   });
 
+  await t.test('4. Normalizes malformed or composite repository context without malforming URL', async () => {
+    let capturedUrl = null;
+    let capturedBody = null;
+    const originalFetch = global.fetch;
+
+    global.fetch = async (url, options) => {
+      capturedUrl = url;
+      capturedBody = JSON.parse(options.body);
+      return {
+        ok: true,
+        json: async () => ({ title: 'Single Issue', number: 101, html_url: 'https://github.com/my-org/my-project/issues/101' })
+      };
+    };
+
+    const { req, res } = createMockReqRes({
+      // Notice repository is "my-org/my-project.git/" or duplicated
+      context: { owner: 'my-org', repository: 'my-org/my-project.git/' },
+      issuePlan: { issues: [{ id: 'task-101', title: 'Single Issue', body: 'Issue details', labels: ['enhancement'] }] }
+    });
+
+    await issuesEndpoint(req, res);
+    global.fetch = originalFetch;
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(capturedUrl, 'https://api.github.com/repos/my-org/my-project/issues');
+    assert.strictEqual(capturedBody.title, 'Single Issue');
+    assert.deepEqual(capturedBody.labels, ['enhancement']);
+    assert.strictEqual(res.jsonData.results.length, 1);
+    assert.strictEqual(res.jsonData.results[0].status, 'success');
+    assert.strictEqual(res.jsonData.results[0].number, 101);
+  });
+
+  await t.test('5. Returns clear, safe error message on GitHub 404 without leaking secrets', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = async (url, options) => {
+      return {
+        ok: false,
+        status: 404,
+        text: async () => JSON.stringify({ message: 'Not Found', documentation_url: 'https://docs.github.com/rest/issues/issues#create-an-issue' })
+      };
+    };
+
+    const { req, res } = createMockReqRes({
+      context: { owner: 'test-org', repository: 'private-repo' },
+      issuePlan: { issues: [{ title: 'Failed Issue' }] }
+    });
+
+    await issuesEndpoint(req, res);
+    global.fetch = originalFetch;
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.jsonData.results.length, 1);
+    assert.strictEqual(res.jsonData.results[0].status, 'error');
+    assert.match(res.jsonData.results[0].error, /not found or insufficient permissions/i);
+    assert.match(res.jsonData.results[0].error, /HTTP 404/);
+    // Verify no tokens or sensitive headers leaked
+    assert.doesNotMatch(res.jsonData.results[0].error, /bearer/i);
+    assert.doesNotMatch(res.jsonData.results[0].error, /token/i);
+  });
+
+  await t.test('6. Rejects invalid or missing repository context with 400', async () => {
+    const { req, res } = createMockReqRes({
+      context: { owner: '', repository: '' },
+      issuePlan: { issues: [{ title: 'Issue' }] }
+    });
+
+    await issuesEndpoint(req, res);
+    assert.strictEqual(res.statusCode, 400);
+    assert.strictEqual(res.jsonData.code, 'INVALID_CONTEXT');
+  });
+
   if (oldEnv === undefined) {
     delete process.env.GITHUB_TOKEN;
   } else {

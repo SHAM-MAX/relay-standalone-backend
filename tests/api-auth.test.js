@@ -192,6 +192,7 @@ test('OAuth Exchange API Tests', async (t) => {
     assert.strictEqual(typeof data.state, 'string');
     assert.strictEqual(data.clientId, 'test-client-id');
     assert.strictEqual(data.redirectUri, `https://${process.env.RELAY_EXTENSION_ID}.chromiumapp.org/`);
+    assert.strictEqual(data.scope, 'public_repo');
   });
 
   await t.test('11. OPTIONS /github/login preflight succeeds for configured extension origin', async () => {

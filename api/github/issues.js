@@ -40,9 +40,36 @@ export default async function (req, res) {
   }
 
   const { context, issuePlan } = body;
-  if (!context || !context.owner || !context.repository) {
+  if (!context || typeof context !== 'object') {
     return res.status(400).json({ error: 'Missing or invalid context (owner, repository required).', code: 'INVALID_CONTEXT' });
   }
+
+  // Robustly extract and normalize owner and repository
+  let rawOwner = typeof context.owner === 'string' ? context.owner.trim() : '';
+  let rawRepo = typeof context.repository === 'string' ? context.repository.trim() : '';
+
+  // Handle cases where repository is passed as "owner/repo" or contains slashes
+  if (rawRepo.includes('/')) {
+    const parts = rawRepo.split('/').map(p => p.trim()).filter(Boolean);
+    if (parts.length >= 2) {
+      if (!rawOwner) rawOwner = parts[0];
+      rawRepo = parts[parts.length - 1];
+    } else if (parts.length === 1) {
+      rawRepo = parts[0];
+    }
+  }
+
+  // Strip any trailing .git or leading/trailing slashes
+  rawRepo = rawRepo.replace(/\.git$/i, '').replace(/^\/+|\/+$/g, '');
+  rawOwner = rawOwner.replace(/^\/+|\/+$/g, '');
+
+  if (!rawOwner || !rawRepo || !/^[a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38}$/i.test(rawOwner) || !/^[\w.-]{1,100}$/.test(rawRepo)) {
+    return res.status(400).json({ error: 'Missing or invalid context (owner, repository required).', code: 'INVALID_CONTEXT' });
+  }
+
+  const normalizedOwner = rawOwner;
+  const normalizedRepo = rawRepo;
+
   if (!issuePlan || !Array.isArray(issuePlan.issues) || issuePlan.issues.length === 0) {
     return res.status(400).json({ error: 'Missing or empty issuePlan.', code: 'INVALID_ISSUE_PLAN' });
   }
@@ -70,11 +97,11 @@ export default async function (req, res) {
     'Content-Type': 'application/json'
   };
 
-  let project = await projectStore.getProject(context.owner, context.repository);
+  let project = await projectStore.getProject(normalizedOwner, normalizedRepo);
   if (!project) {
     project = await projectStore.upsertProject({
-      owner: context.owner,
-      repository: context.repository,
+      owner: normalizedOwner,
+      repository: normalizedRepo,
       description: null
     });
   }
@@ -114,7 +141,7 @@ export default async function (req, res) {
     }
 
     try {
-      const url = `https://api.github.com/repos/${context.owner}/${context.repository}/issues`;
+      const url = `https://api.github.com/repos/${encodeURIComponent(normalizedOwner)}/${encodeURIComponent(normalizedRepo)}/issues`;
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
 
@@ -131,8 +158,29 @@ export default async function (req, res) {
       clearTimeout(timeoutId);
 
       if (!githubRes.ok) {
-          const errorData = await githubRes.text();
-          results.push({ title, status: 'error', error: `GitHub API error: ${githubRes.status} ${errorData}` });
+          let errorMsg = `GitHub API error: ${githubRes.status}`;
+          if (githubRes.status === 404) {
+            errorMsg = `GitHub repository ${normalizedOwner}/${normalizedRepo} not found or insufficient permissions to create issues (HTTP 404).`;
+          } else if (githubRes.status === 403 || githubRes.status === 401) {
+            errorMsg = `GitHub permission denied or token expired (HTTP ${githubRes.status}). Reconnect your GitHub account.`;
+          } else {
+            try {
+              const errorText = await githubRes.text();
+              try {
+                const parsed = JSON.parse(errorText);
+                if (parsed && parsed.message) {
+                  errorMsg = `GitHub API error: ${parsed.message} (HTTP ${githubRes.status})`;
+                }
+              } catch {
+                if (errorText && errorText.length < 200) {
+                  errorMsg = `GitHub API error: ${githubRes.status} ${errorText.trim()}`;
+                }
+              }
+            } catch {
+              // Ignore body read failure
+            }
+          }
+          results.push({ title, status: 'error', error: errorMsg });
           continue;
       }
 
@@ -150,10 +198,10 @@ export default async function (req, res) {
       });
     } catch (err) {
       console.error(err);
-      if (err.name === 'AbortError' || err.message.includes('timeout')) {
+      if (err.name === 'AbortError' || (err.message && err.message.includes('timeout'))) {
         results.push({ title, status: 'error', error: 'Network timeout. Issue may have been created on GitHub. Outcome uncertain.' });
       } else {
-        results.push({ title, status: 'error', error: err.message });
+        results.push({ title, status: 'error', error: err.message || 'Unknown network error' });
       }
     }
   }

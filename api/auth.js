@@ -70,10 +70,12 @@ function encryptToken(token) {
 router.get('/github/login', async (req, res) => {
   try {
     const state = await createOAuthState();
+    const scope = process.env.GITHUB_OAUTH_SCOPE || 'public_repo';
     res.json({
       state,
       clientId: getEnvClientId(),
-      redirectUri: getEnvRedirectUri()
+      redirectUri: getEnvRedirectUri(),
+      scope
     });
   } catch (error) {
     if (error.message === 'SERVER_CONFIG_ERROR') {
