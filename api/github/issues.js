@@ -160,7 +160,37 @@ export default async function (req, res) {
       if (!githubRes.ok) {
           let errorMsg = `GitHub API error: ${githubRes.status}`;
           if (githubRes.status === 404) {
-            errorMsg = `GitHub repository ${normalizedOwner}/${normalizedRepo} not found or insufficient permissions to create issues (HTTP 404).`;
+            // Safe diagnostic distinction without logging tokens or secrets
+            const grantedScopesHeader = githubRes.headers.get('x-oauth-scopes') || '';
+            const grantedScopes = grantedScopesHeader.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+            const hasIssueScope = grantedScopes.includes('repo') || grantedScopes.includes('public_repo');
+
+            if (grantedScopesHeader !== '' && !hasIssueScope) {
+              errorMsg = `GitHub token is missing issue creation scope (granted: [${grantedScopes.join(', ')}]). Please log out and reconnect Relay to grant public_repo scope (HTTP 404).`;
+            } else {
+              // Check if repo is visible and check collaborator/access signals using a safe GET
+              try {
+                const checkRepoUrl = `https://api.github.com/repos/${encodeURIComponent(normalizedOwner)}/${encodeURIComponent(normalizedRepo)}`;
+                const repoRes = await fetch(checkRepoUrl, { headers });
+                if (repoRes.status === 404) {
+                  errorMsg = `GitHub repository ${normalizedOwner}/${normalizedRepo} not found or not accessible with current credentials (HTTP 404).`;
+                } else if (repoRes.ok) {
+                  const repoData = await repoRes.json();
+                  const canPush = repoData.permissions ? repoData.permissions.push : null;
+                  if (canPush === false) {
+                    errorMsg = `GitHub account has restricted or read-only access (push permission is false) on ${normalizedOwner}/${normalizedRepo} (HTTP 404).`;
+                  } else if (grantedScopesHeader !== '' && !hasIssueScope) {
+                    errorMsg = `GitHub token is missing issue creation scope (granted: [${grantedScopes.join(', ')}]). Please log out and reconnect Relay (HTTP 404).`;
+                  } else {
+                    errorMsg = `GitHub repository ${normalizedOwner}/${normalizedRepo} returned 404 on issue creation. Verify repository exists and user has issue creation permissions (HTTP 404).`;
+                  }
+                } else {
+                  errorMsg = `GitHub repository ${normalizedOwner}/${normalizedRepo} returned HTTP ${repoRes.status} during verification.`;
+                }
+              } catch {
+                errorMsg = `GitHub repository ${normalizedOwner}/${normalizedRepo} not found or insufficient permissions to create issues (HTTP 404).`;
+              }
+            }
           } else if (githubRes.status === 403 || githubRes.status === 401) {
             errorMsg = `GitHub permission denied or token expired (HTTP ${githubRes.status}). Reconnect your GitHub account.`;
           } else {

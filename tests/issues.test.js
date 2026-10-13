@@ -57,18 +57,21 @@ test('Issues API Tests', async (t) => {
     });
 
     const originalFetch = global.fetch;
-    global.fetch = async (url, options) => {
-      assert.strictEqual(url, 'https://api.github.com/repos/test/repo/issues');
-      const body = JSON.parse(options.body);
-      assert.strictEqual(body.title, 'New Issue');
-      return {
-        ok: true,
-        json: async () => ({ title: 'New Issue', number: 42, html_url: 'https://github.com/test/repo/issues/42' })
+    try {
+      global.fetch = async (url, options) => {
+        assert.strictEqual(url, 'https://api.github.com/repos/test/repo/issues');
+        const body = JSON.parse(options.body);
+        assert.strictEqual(body.title, 'New Issue');
+        return {
+          ok: true,
+          json: async () => ({ title: 'New Issue', number: 42, html_url: 'https://github.com/test/repo/issues/42' })
+        };
       };
-    };
 
-    await issuesEndpoint(req, res);
-    global.fetch = originalFetch;
+      await issuesEndpoint(req, res);
+    } finally {
+      global.fetch = originalFetch;
+    }
 
     assert.strictEqual(res.statusCode, 200);
     assert.strictEqual(res.jsonData.results.length, 1);
@@ -94,16 +97,19 @@ test('Issues API Tests', async (t) => {
     });
 
     const originalFetch = global.fetch;
-    global.fetch = async (url, options) => {
-      const body = JSON.parse(options.body);
-      if (body.title === 'Good') {
-        return { ok: true, json: async () => ({ title: 'Good', number: 1, html_url: '...' }) };
-      }
-      return { ok: false, status: 422, text: async () => 'Validation failed' };
-    };
+    try {
+      global.fetch = async (url, options) => {
+        const body = JSON.parse(options.body);
+        if (body.title === 'Good') {
+          return { ok: true, json: async () => ({ title: 'Good', number: 1, html_url: '...' }) };
+        }
+        return { ok: false, status: 422, text: async () => 'Validation failed' };
+      };
 
-    await issuesEndpoint(req, res);
-    global.fetch = originalFetch;
+      await issuesEndpoint(req, res);
+    } finally {
+      global.fetch = originalFetch;
+    }
 
     assert.strictEqual(res.statusCode, 200);
     assert.strictEqual(res.jsonData.results.length, 2);
@@ -115,25 +121,27 @@ test('Issues API Tests', async (t) => {
   await t.test('4. Normalizes malformed or composite repository context without malforming URL', async () => {
     let capturedUrl = null;
     let capturedBody = null;
-    const originalFetch = global.fetch;
-
-    global.fetch = async (url, options) => {
-      capturedUrl = url;
-      capturedBody = JSON.parse(options.body);
-      return {
-        ok: true,
-        json: async () => ({ title: 'Single Issue', number: 101, html_url: 'https://github.com/my-org/my-project/issues/101' })
-      };
-    };
-
     const { req, res } = createMockReqRes({
       // Notice repository is "my-org/my-project.git/" or duplicated
       context: { owner: 'my-org', repository: 'my-org/my-project.git/' },
       issuePlan: { issues: [{ id: 'task-101', title: 'Single Issue', body: 'Issue details', labels: ['enhancement'] }] }
     });
 
-    await issuesEndpoint(req, res);
-    global.fetch = originalFetch;
+    const originalFetch = global.fetch;
+    try {
+      global.fetch = async (url, options) => {
+        capturedUrl = url;
+        capturedBody = JSON.parse(options.body);
+        return {
+          ok: true,
+          json: async () => ({ title: 'Single Issue', number: 101, html_url: 'https://github.com/my-org/my-project/issues/101' })
+        };
+      };
+
+      await issuesEndpoint(req, res);
+    } finally {
+      global.fetch = originalFetch;
+    }
 
     assert.strictEqual(res.statusCode, 200);
     assert.strictEqual(capturedUrl, 'https://api.github.com/repos/my-org/my-project/issues');
@@ -145,31 +153,73 @@ test('Issues API Tests', async (t) => {
   });
 
   await t.test('5. Returns clear, safe error message on GitHub 404 without leaking secrets', async () => {
-    const originalFetch = global.fetch;
-    global.fetch = async (url, options) => {
-      return {
-        ok: false,
-        status: 404,
-        text: async () => JSON.stringify({ message: 'Not Found', documentation_url: 'https://docs.github.com/rest/issues/issues#create-an-issue' })
-      };
-    };
-
     const { req, res } = createMockReqRes({
-      context: { owner: 'test-org', repository: 'private-repo' },
+      context: { owner: 'SHAM-MAX', repository: 'GitHub-Kanban-Practice' },
       issuePlan: { issues: [{ title: 'Failed Issue' }] }
     });
 
-    await issuesEndpoint(req, res);
-    global.fetch = originalFetch;
+    const originalFetch = global.fetch;
+    try {
+      global.fetch = async (url, options) => {
+        return {
+          ok: false,
+          status: 404,
+          headers: new Headers({ 'x-oauth-scopes': 'read:user' }),
+          text: async () => JSON.stringify({ message: 'Not Found', documentation_url: 'https://docs.github.com/rest/issues/issues#create-an-issue' })
+        };
+      };
+
+      await issuesEndpoint(req, res);
+    } finally {
+      global.fetch = originalFetch;
+    }
 
     assert.strictEqual(res.statusCode, 200);
     assert.strictEqual(res.jsonData.results.length, 1);
     assert.strictEqual(res.jsonData.results[0].status, 'error');
-    assert.match(res.jsonData.results[0].error, /not found or insufficient permissions/i);
+    assert.match(res.jsonData.results[0].error, /missing issue creation scope/i);
     assert.match(res.jsonData.results[0].error, /HTTP 404/);
-    // Verify no tokens or sensitive headers leaked
+    // Verify no secret tokens or auth headers leaked
     assert.doesNotMatch(res.jsonData.results[0].error, /bearer/i);
-    assert.doesNotMatch(res.jsonData.results[0].error, /token/i);
+    assert.doesNotMatch(res.jsonData.results[0].error, /mock-github-token/i);
+  });
+
+  await t.test('5b. Diagnoses user lacking write permissions on 404', async () => {
+    const { req, res } = createMockReqRes({
+      context: { owner: 'other-user', repository: 'public-repo' },
+      issuePlan: { issues: [{ title: 'Failed Issue' }] }
+    });
+
+    const originalFetch = global.fetch;
+    try {
+      global.fetch = async (url, options) => {
+        if (options.method === 'POST') {
+          return {
+            ok: false,
+            status: 404,
+            headers: new Headers({ 'x-oauth-scopes': 'public_repo' }),
+            text: async () => JSON.stringify({ message: 'Not Found' })
+          };
+        }
+        // GET repo verification
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          json: async () => ({ permissions: { push: false } })
+        };
+      };
+
+      await issuesEndpoint(req, res);
+    } finally {
+      global.fetch = originalFetch;
+    }
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.jsonData.results.length, 1);
+    assert.strictEqual(res.jsonData.results[0].status, 'error');
+    assert.match(res.jsonData.results[0].error, /restricted or read-only access/i);
+    assert.doesNotMatch(res.jsonData.results[0].error, /bearer/i);
   });
 
   await t.test('6. Rejects invalid or missing repository context with 400', async () => {
