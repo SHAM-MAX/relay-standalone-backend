@@ -233,6 +233,32 @@ test('Issues API Tests', async (t) => {
     assert.strictEqual(res.jsonData.code, 'INVALID_CONTEXT');
   });
 
+  await t.test('7. Passes assignees payload to GitHub REST issue creation', async () => {
+    let capturedBody = null;
+    const { req, res } = createMockReqRes({
+      context: { owner: 'test', repository: 'repo' },
+      issuePlan: { issues: [{ title: 'Task with Assignee', body: 'Desc', assignees: ['alice'] }] }
+    });
+
+    const originalFetch = global.fetch;
+    try {
+      global.fetch = async (url, options) => {
+        capturedBody = JSON.parse(options.body);
+        return {
+          ok: true,
+          json: async () => ({ title: 'Task with Assignee', number: 43, html_url: 'https://github.com/test/repo/issues/43' })
+        };
+      };
+
+      await issuesEndpoint(req, res);
+    } finally {
+      global.fetch = originalFetch;
+    }
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.deepStrictEqual(capturedBody.assignees, ['alice']);
+  });
+
   if (oldEnv === undefined) {
     delete process.env.GITHUB_TOKEN;
   } else {

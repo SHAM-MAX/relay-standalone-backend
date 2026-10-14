@@ -113,7 +113,7 @@ export default async function (req, res) {
   const results = [];
 
   for (const issue of issuePlan.issues) {
-    const { title, body: issueBody, labels, issue_type, id: issueId } = issue;
+    const { title, body: issueBody, labels, issue_type, id: issueId, assignees, assignee } = issue;
 
     if (!title) {
         results.push({ title: title || 'Untitled', status: 'error', error: 'Missing title' });
@@ -145,14 +145,27 @@ export default async function (req, res) {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
 
+      // Normalize assignees array (support single assignee string or assignees array)
+      let resolvedAssignees = [];
+      if (Array.isArray(assignees)) {
+        resolvedAssignees = assignees.filter(a => typeof a === 'string' && a.trim().length > 0);
+      } else if (typeof assignee === 'string' && assignee.trim().length > 0) {
+        resolvedAssignees = [assignee.trim()];
+      }
+
+      const issuePayload = {
+        title,
+        body: issueBody || '',
+        labels: Array.isArray(labels) ? labels : []
+      };
+      if (resolvedAssignees.length > 0) {
+        issuePayload.assignees = resolvedAssignees;
+      }
+
       const githubRes = await fetch(url, {
         method: 'POST',
         headers,
-        body: JSON.stringify({
-          title,
-          body: issueBody || '',
-          labels: Array.isArray(labels) ? labels : []
-        }),
+        body: JSON.stringify(issuePayload),
         signal: controller.signal
       });
       clearTimeout(timeoutId);
