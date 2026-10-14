@@ -373,4 +373,64 @@ test('Developer Assignment Intelligence (Phase 1)', async (t) => {
       global.fetch = originalFetch;
     }
   });
+
+  await t.test('7. Empty assignee list and insufficient permissions handling', async () => {
+    const originalFetch = global.fetch;
+    const testOwner = 'test-empty-org';
+    const testRepo = 'empty-repo';
+    const bobSession = await createSession(bob.id);
+
+    // Mock GitHub returning 403 insufficient permissions
+    global.fetch = async (url, options) => {
+      const urlStr = String(url);
+      if (urlStr.includes('/assignees')) {
+        return {
+          ok: false,
+          status: 403,
+          json: async () => ({ message: 'Must have push access to view assignees' })
+        };
+      }
+      return originalFetch(url, options);
+    };
+
+    try {
+      const recRes = await originalFetch(`${baseUrl}/api/pm/assignment/recommendations?owner=${testOwner}&repo=${testRepo}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cookie': `relay_pm_session=${bobSession}`
+        },
+        body: JSON.stringify({
+          task: { title: 'Test Task' }
+        })
+      });
+
+      assert.equal(recRes.status, 200);
+      const data = await recRes.json();
+      assert.deepEqual(data.recommendations, []);
+      assert.ok(data.warnings.length > 0);
+      assert.ok(data.warnings[0].includes('Insufficient GitHub permissions'));
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  await t.test('8. CORS preflight OPTIONS returns 204 with extension origin headers', async () => {
+    const extOrigin = 'chrome-extension://' + 'a'.repeat(32);
+    // Register origin in pm_extension_origins
+    await db.query(`INSERT INTO pm_extension_origins (origin) VALUES ($1) ON CONFLICT DO NOTHING`, [extOrigin]);
+
+    const res = await fetch(`${baseUrl}/api/pm/assignment/recommendations`, {
+      method: 'OPTIONS',
+      headers: {
+        'Origin': extOrigin,
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'content-type'
+      }
+    });
+
+    assert.equal(res.status, 204);
+    assert.equal(res.headers.get('access-control-allow-origin'), extOrigin);
+    assert.equal(res.headers.get('access-control-allow-credentials'), 'true');
+  });
 });

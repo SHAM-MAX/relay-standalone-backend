@@ -1,5 +1,6 @@
 import express from 'express';
-import { authenticateRequest, authorizeProjectAction, decryptToken } from '../../lib/auth.js';
+import { authenticateRequest, authorizeProjectAction, decryptToken, getProjectRole, setProjectRole } from '../../lib/auth.js';
+import { RELAY_ORIGIN, header, hasOrigin, corsHeaders } from '../../lib/assistant-access.js';
 import developerStore from '../../lib/developer-store.js';
 import projectStore from '../../lib/project-store.js';
 import githubEvidence from '../../lib/github-evidence.js';
@@ -8,10 +9,85 @@ import db from '../../lib/db.js';
 
 const router = express.Router();
 
+// Attach CORS middleware for Chrome Extension cross-origin requests
+router.use(async (req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Vary', 'Origin');
+
+  const origin = header(req, 'origin');
+  const approvedOrigin = origin === RELAY_ORIGIN || await hasOrigin(origin);
+
+  if (approvedOrigin) {
+    corsHeaders(res, origin, 'GET, POST, PUT, OPTIONS');
+  }
+
+  if (req.method === 'OPTIONS') {
+    if (!approvedOrigin) {
+      return res.status(403).json({ error: 'Origin not allowed' });
+    }
+    return res.status(204).send('');
+  }
+
+  next();
+});
+
 function getOwnerRepo(req) {
-  const owner = req.query.owner || req.body?.owner;
-  const repo = req.query.repo || req.body?.repo;
-  return { owner, repo };
+  let rawOwner = (req.query.owner || req.body?.owner || '').toString().trim();
+  let rawRepo = (req.query.repo || req.body?.repo || '').toString().trim();
+
+  if (rawRepo.includes('/')) {
+    const parts = rawRepo.split('/').map(p => p.trim()).filter(Boolean);
+    if (parts.length >= 2) {
+      if (!rawOwner) rawOwner = parts[0];
+      rawRepo = parts[parts.length - 1];
+    } else if (parts.length === 1) {
+      rawRepo = parts[0];
+    }
+  }
+
+  rawRepo = rawRepo.replace(/\.git$/i, '').replace(/^\/+|\/+$/g, '');
+  rawOwner = rawOwner.replace(/^\/+|\/+$/g, '');
+
+  return { owner: rawOwner, repo: rawRepo };
+}
+
+async function getOrCreateProjectAndAuthorize(req, requiredRole = 'Viewer') {
+  const { owner, repo } = getOwnerRepo(req);
+  if (!owner || !repo) {
+    const err = new Error('owner and repo are required');
+    err.status = 400;
+    throw err;
+  }
+
+  let project = await projectStore.getProject(owner, repo);
+  if (!project) {
+    project = await projectStore.upsertProject({
+      owner,
+      repository: repo,
+      description: null
+    });
+  }
+
+  // Authenticate user via session
+  const authUser = await authenticateRequest(req);
+
+  // Check project membership; auto-bootstrap as Approver/Manager if user is owner or first member
+  let role = await getProjectRole(project.id, authUser.id);
+  if (!role) {
+    const isOwner = (authUser.github_username || '').toLowerCase() === owner.toLowerCase();
+    const assignedRole = isOwner ? 'Approver' : 'Viewer';
+    await setProjectRole(project.id, authUser.id, assignedRole);
+    role = assignedRole;
+  }
+
+  const roleHierarchy = { 'Viewer': 1, 'Manager': 2, 'Approver': 3 };
+  if ((roleHierarchy[role] || 0) < (roleHierarchy[requiredRole] || 0)) {
+    const err = new Error(`Action requires ${requiredRole} role, but user is ${role}`);
+    err.status = 403;
+    throw err;
+  }
+
+  return { project, authUser, owner, repo };
 }
 
 /**
@@ -20,18 +96,7 @@ function getOwnerRepo(req) {
  */
 router.get('/profile', async (req, res) => {
   try {
-    const { owner, repo } = getOwnerRepo(req);
-    if (!owner || !repo) {
-      return res.status(400).json({ error: 'owner and repo query parameters are required' });
-    }
-
-    const project = await projectStore.getProject(owner, repo);
-    if (!project) {
-      return res.status(404).json({ error: 'Project not found' });
-    }
-
-    // Must be at least a Viewer of the project
-    const authUser = await authorizeProjectAction(req, project.id, 'Viewer');
+    const { project, authUser } = await getOrCreateProjectAndAuthorize(req, 'Viewer');
 
     // If targetUserId query param is passed and user is Manager/Approver, allow reading other's profile
     const targetUserId = req.query.userId || authUser.id;
@@ -39,8 +104,10 @@ router.get('/profile', async (req, res) => {
 
     return res.json({ profile });
   } catch (err) {
-    const status = err.message.includes('not a member') ? 403 : 
-                   err.message.includes('cookie') ? 401 : 500;
+    const status = err.status || (
+      err.message.includes('not a member') ? 403 :
+      err.message.includes('cookie') ? 401 : 500
+    );
     return res.status(status).json({ error: err.message });
   }
 });
@@ -51,25 +118,12 @@ router.get('/profile', async (req, res) => {
  */
 router.put('/profile', async (req, res) => {
   try {
-    const { owner, repo } = getOwnerRepo(req);
-    if (!owner || !repo) {
-      return res.status(400).json({ error: 'owner and repo are required' });
-    }
-
-    const project = await projectStore.getProject(owner, repo);
-    if (!project) {
-      return res.status(404).json({ error: 'Project not found' });
-    }
-
     const authUser = await authenticateRequest(req);
     const targetUserId = req.body.userId || authUser.id;
 
     // If editing another user's profile, require Manager or Approver role
-    if (targetUserId !== authUser.id) {
-      await authorizeProjectAction(req, project.id, 'Manager');
-    } else {
-      await authorizeProjectAction(req, project.id, 'Viewer');
-    }
+    const requiredRole = (targetUserId !== authUser.id) ? 'Manager' : 'Viewer';
+    const { project } = await getOrCreateProjectAndAuthorize(req, requiredRole);
 
     const { declaredSkills, weeklyCapacityHours, maxConcurrentTasks, isAvailable, currentFocus } = req.body;
 
@@ -83,8 +137,10 @@ router.put('/profile', async (req, res) => {
 
     return res.json({ profile });
   } catch (err) {
-    const status = err.message.includes('requires') || err.message.includes('not a member') ? 403 :
-                   err.message.includes('cookie') ? 401 : 400;
+    const status = err.status || (
+      err.message.includes('requires') || err.message.includes('not a member') ? 403 :
+      err.message.includes('cookie') ? 401 : 400
+    );
     return res.status(status).json({ error: err.message });
   }
 });
@@ -96,18 +152,7 @@ router.put('/profile', async (req, res) => {
  */
 router.post('/recommendations', async (req, res) => {
   try {
-    const { owner, repo } = getOwnerRepo(req);
-    if (!owner || !repo) {
-      return res.status(400).json({ error: 'owner and repo are required' });
-    }
-
-    const project = await projectStore.getProject(owner, repo);
-    if (!project) {
-      return res.status(404).json({ error: 'Project not found' });
-    }
-
-    // Must be authenticated and at least a Viewer of the project
-    const authUser = await authorizeProjectAction(req, project.id, 'Viewer');
+    const { project, authUser, owner, repo } = await getOrCreateProjectAndAuthorize(req, 'Viewer');
 
     // Decrypt GitHub token for fetching GitHub evidence
     let githubToken = null;
@@ -122,10 +167,11 @@ router.post('/recommendations', async (req, res) => {
     if (!eligibleAssignees || eligibleAssignees.length === 0) {
       return res.json({
         recommendations: [],
-        warnings: [assigneeWarning || 'No eligible assignees found for this repository'],
+        warnings: [assigneeWarning || 'No eligible assignees found for this repository on GitHub.'],
         metadata: {
           evaluatedCandidatesCount: 0,
-          task: req.body.task || {}
+          task: req.body.task || {},
+          hasToken: Boolean(githubToken)
         }
       });
     }
@@ -183,8 +229,10 @@ router.post('/recommendations', async (req, res) => {
       }
     });
   } catch (err) {
-    const status = err.message.includes('not a member') || err.message.includes('requires') ? 403 :
-                   err.message.includes('cookie') ? 401 : 500;
+    const status = err.status || (
+      err.message.includes('not a member') || err.message.includes('requires') ? 403 :
+      err.message.includes('cookie') ? 401 : 500
+    );
     return res.status(status).json({ error: err.message });
   }
 });

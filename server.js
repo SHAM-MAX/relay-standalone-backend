@@ -72,9 +72,7 @@ app.use('/api/pm/members', wrap(pmMembersRoute));
 app.options('/api/pm/members', wrap(pmMembersRoute));
 app.options('/api/pm/members/*', wrap(pmMembersRoute));
 
-app.use('/api/pm/assignment', wrap(pmAssignmentRoute));
-app.options('/api/pm/assignment', wrap(pmAssignmentRoute));
-app.options('/api/pm/assignment/*', wrap(pmAssignmentRoute));
+app.use('/api/pm/assignment', pmAssignmentRoute);
 
 // Health check endpoint preserving exact contract: { status: 'ok' }
 app.get('/health', async (req, res) => {
