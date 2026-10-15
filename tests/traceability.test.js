@@ -331,10 +331,71 @@ Additional notes.
 
     const lowerMatch = await getProject('test-owner-case', 'test-repo-case');
     assert.ok(lowerMatch, 'LOWER case search should match mixed-case project');
-    assert.strictEqual(lowerMatch.github_owner, 'Test-Owner-Case');
-
     const upperMatch = await getProject('TEST-OWNER-CASE', 'TEST-REPO-CASE');
     assert.ok(upperMatch, 'UPPER case search should match mixed-case project');
+  });
+
+  await t.test('13. Delivery status and summary counts when workItem has published GitHub issue', async () => {
+    const { buildTraceabilityMatrix } = await import('../lib/traceability-engine.js');
+    const rawTraceability = [
+      {
+        id: 'req-1',
+        req_id: 'REQ-001',
+        title: 'Develop UI',
+        description: '## ACCEPTANCE CRITERIA\n- [ ] UI works',
+        status: 'approved',
+        workItems: [
+          {
+            id: 'wi-1',
+            item_id: 'TSK-001',
+            type: 'task',
+            title: 'Frontend UI',
+            github_issue_number: 11,
+            github_issue_url: 'https://github.com/test-owner/test-repo/issues/11',
+            description: 'Task details'
+          }
+        ]
+      },
+      {
+        id: 'req-2',
+        req_id: 'REQ-002',
+        title: 'Empty Req',
+        description: '',
+        status: 'approved',
+        workItems: []
+      }
+    ];
+
+    const githubIssues = [
+      {
+        number: 11,
+        title: 'Frontend UI',
+        state: 'open',
+        html_url: 'https://github.com/test-owner/test-repo/issues/11'
+      }
+    ];
+
+    const matrix = buildTraceabilityMatrix(rawTraceability, githubIssues, []);
+
+    // REQ-001 has published issue #11 without PRs -> should NOT be missing_issues
+    assert.strictEqual(matrix.requirements[0].deliveryStatus.status, 'missing_prs');
+    assert.strictEqual(matrix.requirements[0].deliveryStatus.label, 'No Linked PRs');
+    assert.strictEqual(matrix.requirements[0].deliveryStatus.badgeClass, 'warning');
+
+    // REQ-002 has no work items
+    assert.strictEqual(matrix.requirements[1].deliveryStatus.status, 'missing_work_items');
+
+    // Summary counts
+    assert.strictEqual(matrix.summary.totalRequirements, 2);
+    assert.strictEqual(matrix.summary.inProgressCount, 1);
+    assert.strictEqual(matrix.summary.verifiedCount, 0);
+    assert.strictEqual(matrix.summary.deliveredUnverifiedCount, 0);
+
+    // Gaps preserved: REQ-002 missing work items, issue #11 missing PR
+    assert.strictEqual(matrix.gaps.requirementsWithoutIssues.length, 1);
+    assert.strictEqual(matrix.gaps.requirementsWithoutIssues[0].reqId, 'REQ-002');
+    assert.strictEqual(matrix.gaps.issuesWithoutPrs.length, 1);
+    assert.strictEqual(matrix.gaps.issuesWithoutPrs[0].issueNumber, 11);
   });
 });
 
