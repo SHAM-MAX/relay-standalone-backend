@@ -324,6 +324,18 @@ Additional notes.
 
     global.fetch = originalFetch;
   });
+
+  await t.test('12. Case-insensitive project identity resolution in traceability', async () => {
+    const { getProject, upsertProject } = await import('../lib/project-store.js');
+    await upsertProject({ owner: 'Test-Owner-Case', repository: 'Test-Repo-Case' });
+
+    const lowerMatch = await getProject('test-owner-case', 'test-repo-case');
+    assert.ok(lowerMatch, 'LOWER case search should match mixed-case project');
+    assert.strictEqual(lowerMatch.github_owner, 'Test-Owner-Case');
+
+    const upperMatch = await getProject('TEST-OWNER-CASE', 'TEST-REPO-CASE');
+    assert.ok(upperMatch, 'UPPER case search should match mixed-case project');
+  });
 });
 
 
