@@ -4,6 +4,7 @@ import db from '../lib/db.js';
 import { runMigrations } from '../lib/migrator.js';
 import projectStore from '../lib/project-store.js';
 import traceabilityStore from '../lib/traceability-store.js';
+import traceabilityEndpoint from '../api/pm/traceability.js';
 import { newDb } from 'pg-mem';
 import crypto from 'node:crypto';
 
@@ -269,5 +270,60 @@ Additional notes.
     assert.equal(matrix.gaps.prsWithoutRequirements.length, 1);
     assert.equal(matrix.gaps.prsWithoutRequirements[0].prNumber, 202);
   });
+
+  await t.test('11. Regression: Extension GET without Origin header succeeds; unauthorized origin rejected', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = async (url) => {
+      if (url.includes('/issues')) {
+        return { ok: true, json: async () => [] };
+      }
+      if (url.includes('/pulls')) {
+        return { ok: true, json: async () => [] };
+      }
+      return { ok: true, json: async () => ({}) };
+    };
+
+    const createMockReqRes = (headers = {}, query = { owner: 'test-owner', repo: 'test-repo' }) => {
+      const finalHeaders = { ...headers };
+      const req = {
+        method: 'GET',
+        headers: finalHeaders,
+        query
+      };
+      const res = {
+        headers: {},
+        statusCode: 200,
+        jsonData: null,
+        setHeader(k, v) { this.headers[k] = v; },
+        status(code) { this.statusCode = code; return this; },
+        json(data) { this.jsonData = data; return this; },
+        send(data) { this.jsonData = data; return this; }
+      };
+      return { req, res };
+    };
+
+    // A. Request without Origin header succeeds (does not falsely fail with EXTENSION_NOT_CONNECTED)
+    const { req: noOriginReq, res: noOriginRes } = createMockReqRes();
+    await traceabilityEndpoint(noOriginReq, noOriginRes);
+    assert.strictEqual(noOriginRes.statusCode, 200);
+    assert.ok(noOriginRes.jsonData.traceability);
+
+    // B. Request with unauthorized Origin header is rejected with 403 EXTENSION_NOT_CONNECTED
+    const { req: badOriginReq, res: badOriginRes } = createMockReqRes({
+      origin: 'https://malicious-site.example.com'
+    });
+    await traceabilityEndpoint(badOriginReq, badOriginRes);
+    assert.strictEqual(badOriginRes.statusCode, 403);
+    assert.strictEqual(badOriginRes.jsonData.code, 'EXTENSION_NOT_CONNECTED');
+
+    // C. Preflight OPTIONS for unapproved origin is 204 or rejected if origin invalid
+    const { req: optionsReq, res: optionsRes } = createMockReqRes({ origin: 'https://relay-ai-project.hatchable.site' });
+    optionsReq.method = 'OPTIONS';
+    await traceabilityEndpoint(optionsReq, optionsRes);
+    assert.strictEqual(optionsRes.statusCode, 204);
+
+    global.fetch = originalFetch;
+  });
 });
+
 
