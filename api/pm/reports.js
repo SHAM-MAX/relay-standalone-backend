@@ -144,7 +144,21 @@ router.get('/', async (req, res) => {
       warnings.push(`Could not fetch GitHub pull requests: ${err.message}`);
     }
 
-    // 3. Optional CI check status on recent PRs
+    // 3. Fetch real GitHub milestones (open and closed, up to 100)
+    let githubMilestones = [];
+    try {
+      const msUrl = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/milestones?state=all&per_page=100`;
+      const msRes = await fetch(msUrl, { headers, signal: AbortSignal.timeout(6000) });
+      if (msRes.ok) {
+        githubMilestones = await msRes.json();
+      } else {
+        warnings.push(`GitHub milestones query returned HTTP ${msRes.status}`);
+      }
+    } catch (err) {
+      warnings.push(`Could not fetch GitHub milestones: ${err.message}`);
+    }
+
+    // 4. Optional CI check status on recent PRs
     for (const pr of githubPulls.slice(0, 10)) {
       if (pr.head && pr.head.sha) {
         try {
@@ -158,16 +172,38 @@ router.get('/', async (req, res) => {
       }
     }
 
-    // 4. Fetch Relay milestones, schedule items, risks, change requests, and traceability
-    let milestones = [];
+    // 5. Fetch Relay milestones, schedule items, risks, change requests, and traceability
+    let relayMilestones = [];
     let scheduleItems = [];
     let risks = [];
     let changeRequests = [];
     let rawTraceability = [];
 
     try {
-      milestones = await milestoneStore.getMilestones(project.id);
+      relayMilestones = await milestoneStore.getMilestones(project.id);
     } catch (_) {}
+
+    // Merge GitHub milestones and Relay milestones (deduplicating by title or clientReferenceId)
+    const milestones = [...relayMilestones];
+    const seenTitles = new Set(relayMilestones.map(m => (m.title || '').trim().toLowerCase()));
+
+    for (const gm of githubMilestones) {
+      const gmTitle = (gm.title || '').trim();
+      const gmTitleLower = gmTitle.toLowerCase();
+      if (!seenTitles.has(gmTitleLower)) {
+        seenTitles.add(gmTitleLower);
+        milestones.push({
+          id: `gh-${gm.number || gm.id}`,
+          milestone_id: `GH-${gm.number || gm.id}`,
+          title: gmTitle,
+          description: gm.description || '',
+          target_date: gm.due_on ? gm.due_on.split('T')[0] : null,
+          state: gm.state || 'open',
+          source: 'github',
+          html_url: gm.html_url
+        });
+      }
+    }
 
     try {
       scheduleItems = await scheduleEngine.getSchedule(project.id);

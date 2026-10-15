@@ -156,12 +156,39 @@ router.get('/', async (req, res) => {
       }
     }
 
-    // 4. Fetch local schedule & milestone items
-    let milestones = [];
+    // 4. Fetch GitHub milestones and local Relay milestones
+    let githubMilestones = [];
+    try {
+      const msUrl = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/milestones?state=all&per_page=100`;
+      const msRes = await fetch(msUrl, { headers, signal: AbortSignal.timeout(6000) });
+      if (msRes.ok) {
+        githubMilestones = await msRes.json();
+      }
+    } catch (_) {}
+
+    let relayMilestones = [];
     let scheduleItems = [];
     try {
-      milestones = await milestoneStore.getMilestones(project.id);
+      relayMilestones = await milestoneStore.getMilestones(project.id);
     } catch (_) {}
+
+    const milestones = [...relayMilestones];
+    const seenTitles = new Set(relayMilestones.map(m => (m.title || '').trim().toLowerCase()));
+    for (const gm of githubMilestones) {
+      const gmTitle = (gm.title || '').trim();
+      const gmTitleLower = gmTitle.toLowerCase();
+      if (!seenTitles.has(gmTitleLower)) {
+        seenTitles.add(gmTitleLower);
+        milestones.push({
+          id: `gh-${gm.number || gm.id}`,
+          milestone_id: `GH-${gm.number || gm.id}`,
+          title: gmTitle,
+          description: gm.description || '',
+          target_date: gm.due_on ? gm.due_on.split('T')[0] : null,
+          state: gm.state || 'open'
+        });
+      }
+    }
 
     try {
       scheduleItems = await scheduleEngine.getSchedule(project.id);

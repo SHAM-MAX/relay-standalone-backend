@@ -319,4 +319,140 @@ test('PM Reports API Route Tests', async (t) => {
       global.fetch = originalFetch;
     }
   });
+
+  await t.test('3. Regression: Retrieves and summarizes GitHub milestones with overdue issues referencing milestone', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = async (url, opts) => {
+      if (url.includes('/milestones')) {
+        return {
+          ok: true,
+          json: async () => [
+            {
+              number: 1,
+              id: 991,
+              title: 'Sprint 1 - Parent Authentication',
+              description: 'Initial sprint',
+              due_on: '2026-08-20T00:00:00Z',
+              state: 'open',
+              html_url: 'https://github.com/reports-test-org/reports-test-repo/milestone/1'
+            }
+          ]
+        };
+      }
+      if (url.includes('/issues')) {
+        return {
+          ok: true,
+          json: async () => [
+            {
+              number: 101,
+              title: 'Overdue Task 1',
+              state: 'open',
+              milestone: {
+                number: 1,
+                title: 'Sprint 1 - Parent Authentication',
+                due_on: '2026-08-20T00:00:00Z'
+              }
+            },
+            {
+              number: 102,
+              title: 'Overdue Task 2',
+              state: 'open',
+              milestone: {
+                number: 1,
+                title: 'Sprint 1 - Parent Authentication',
+                due_on: '2026-08-20T00:00:00Z'
+              }
+            },
+            {
+              number: 103,
+              title: 'Completed Task',
+              state: 'closed',
+              milestone: {
+                number: 1,
+                title: 'Sprint 1 - Parent Authentication',
+                due_on: '2026-08-20T00:00:00Z'
+              }
+            }
+          ]
+        };
+      }
+      if (url.includes('/pulls')) {
+        return { ok: true, json: async () => [] };
+      }
+      if (url.includes('/assignees') || url.includes('/contributors')) {
+        return { ok: true, json: async () => [] };
+      }
+      return originalFetch(url, opts);
+    };
+
+    try {
+      const sessionId = await createSession(pmUser.id);
+      const res = await originalFetch(`${baseUrl}/api/pm/reports?owner=${testOwner}&repo=${testRepo}`, {
+        headers: {
+          Cookie: `relay_pm_session=${sessionId}`
+        }
+      });
+
+      assert.strictEqual(res.status, 200);
+      const data = await res.json();
+      const msReport = data.reports.milestoneReport;
+      assert.strictEqual(msReport.totalMilestones, 1, 'Must include GitHub milestone');
+      assert.strictEqual(msReport.milestones.length, 1);
+      const sprint1 = msReport.milestones[0];
+      assert.strictEqual(sprint1.title, 'Sprint 1 - Parent Authentication');
+      assert.strictEqual(sprint1.totalIssues, 3);
+      assert.strictEqual(sprint1.openIssues, 2);
+      assert.strictEqual(sprint1.closedIssues, 1);
+      assert.strictEqual(sprint1.targetDate, '2026-08-20');
+      assert.ok(sprint1.isOverdue, 'August 20, 2026 milestone must be flagged overdue when open issues remain');
+      assert.strictEqual(sprint1.healthStatus, 'at_risk');
+
+      // Verify Project Status Report overdue issues
+      assert.strictEqual(data.reports.projectStatusReport.metrics.overdueCount, 2);
+      assert.strictEqual(data.reports.projectStatusReport.overdueIssues.length, 2);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  await t.test('4. Regression: Repository with no milestones returns zero milestones with clean empty state', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = async (url, opts) => {
+      if (url.includes('/milestones')) {
+        return { ok: true, json: async () => [] };
+      }
+      if (url.includes('/issues')) {
+        return {
+          ok: true,
+          json: async () => [
+            { number: 1, title: 'Adhoc task without milestone', state: 'open' }
+          ]
+        };
+      }
+      if (url.includes('/pulls')) {
+        return { ok: true, json: async () => [] };
+      }
+      if (url.includes('/assignees') || url.includes('/contributors')) {
+        return { ok: true, json: async () => [] };
+      }
+      return originalFetch(url, opts);
+    };
+
+    try {
+      const sessionId = await createSession(pmUser.id);
+      const res = await originalFetch(`${baseUrl}/api/pm/reports?owner=${testOwner}&repo=${testRepo}`, {
+        headers: {
+          Cookie: `relay_pm_session=${sessionId}`
+        }
+      });
+
+      assert.strictEqual(res.status, 200);
+      const data = await res.json();
+      const msReport = data.reports.milestoneReport;
+      assert.strictEqual(msReport.totalMilestones, 0);
+      assert.strictEqual(msReport.milestones.length, 0);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
 });

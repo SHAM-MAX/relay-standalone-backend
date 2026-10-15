@@ -117,7 +117,7 @@ test('Phase 4.5: Authentication and RBAC', async (t) => {
       assert.equal(decryptToken(validTokenString, badIv), null);
 
       // Malformed ciphertext (tampered tag)
-      const tamperedTag = tag.replace(/[0-9a-f]/, 'f');
+      const tamperedTag = (tag[0] === '0' ? '1' : '0') + tag.slice(1);
       assert.equal(decryptToken(`${enc}:${tamperedTag}`, iv), null);
 
       // Malformed structure
