@@ -13,6 +13,7 @@ import pmChangesRoute from './api/pm/changes.js';
 import pmMembersRoute from './api/pm/members.js';
 import pmAssignmentRoute from './api/pm/assignment.js';
 import pmHealthRoute from './api/pm/health.js';
+import pmReportsRoute from './api/pm/reports.js';
 import authRoute from './api/auth.js';
 import db from './lib/db.js';
 import { getMigrationStatus } from './lib/migrator.js';
@@ -75,6 +76,7 @@ app.options('/api/pm/members/*', wrap(pmMembersRoute));
 
 app.use('/api/pm/assignment', pmAssignmentRoute);
 app.use('/api/pm/health', pmHealthRoute);
+app.use('/api/pm/reports', pmReportsRoute);
 
 // Health check endpoint preserving exact contract: { status: 'ok' }
 app.get('/health', async (req, res) => {
