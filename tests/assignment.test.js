@@ -9,6 +9,7 @@ import projectStore from '../lib/project-store.js';
 import { upsertUser, setProjectRole } from '../lib/auth.js';
 import { createSession } from '../lib/session.js';
 import assignmentRouter from '../api/pm/assignment.js';
+import * as assistant from '../lib/assistant.js';
 
 test('Developer Assignment Intelligence (Phase 1)', async (t) => {
   // 1. Run migrations to ensure 010_developer_profiles.sql is applied
@@ -720,5 +721,156 @@ test('Developer Assignment Intelligence (Phase 1)', async (t) => {
       global.fetch = originalFetch;
     }
   });
+
+  await t.test('15. End-to-end profile persistence and assignment recommendation pipeline (SHAM-MAX/GitHub-Kanban-Practice)', async () => {
+    const owner = 'SHAM-MAX';
+    const repo = 'GitHub-Kanban-Practice';
+    const testUser = await upsertUser('120955748', 'SHAM-MAX');
+    const userSession = await createSession(testUser.id);
+
+    // 1. Save developer profile through the profile API
+    const putRes = await fetch(`${baseUrl}/api/pm/assignment/profile?owner=${owner}&repo=${repo}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Cookie': `relay_pm_session=${userSession}`
+      },
+      body: JSON.stringify({
+        skills: ['JavaScript', 'React', 'Python', 'FastAPI'],
+        weeklyHoursCapacity: 20,
+        maxConcurrentTasks: 3,
+        availabilityStatus: 'available',
+        currentFocus: 'backend API'
+      })
+    });
+    assert.equal(putRes.status, 200);
+    const putData = await putRes.json();
+    assert.ok(putData.profile);
+    assert.deepEqual(putData.profile.declared_skills, ['javascript', 'react', 'python', 'fastapi']);
+    assert.equal(putData.profile.weekly_capacity_hours, 20);
+    assert.equal(putData.profile.max_concurrent_tasks, 3);
+    assert.equal(putData.profile.is_available, true);
+    assert.equal(putData.profile.current_focus, 'backend API');
+
+    // 2. Reload it through the profile API and verify exact persistence
+    const getRes = await fetch(`${baseUrl}/api/pm/assignment/profile?owner=${owner}&repo=${repo}`, {
+      headers: {
+        'Cookie': `relay_pm_session=${userSession}`
+      }
+    });
+    assert.equal(getRes.status, 200);
+    const getData = await getRes.json();
+    assert.ok(getData.profile);
+    assert.deepEqual(getData.profile.declared_skills, ['javascript', 'react', 'python', 'fastapi']);
+    assert.equal(getData.profile.weekly_capacity_hours, 20);
+    assert.equal(getData.profile.max_concurrent_tasks, 3);
+    assert.equal(getData.profile.is_available, true);
+    assert.equal(getData.profile.current_focus, 'backend API');
+
+    // 3. Run the assignment recommendation engine for issue #10
+    const originalFetch = global.fetch;
+    let githubIssueAssigned = false;
+
+    try {
+      global.fetch = async (reqUrl, fetchOptions) => {
+        const url = String(reqUrl);
+        if (url.includes('api.github.com')) {
+          if (url.includes('/issues/10/assignees') || (url.includes('/issues/10') && fetchOptions?.method === 'POST')) {
+            githubIssueAssigned = true;
+          }
+          if (url.includes('/issues/10')) {
+            return {
+              ok: true,
+              headers: new Headers(),
+              json: async () => ({
+                number: 10,
+                title: 'Implement Frontend Form for User Profile Update',
+                body: '## OBJECTIVE\nImplement the frontend user profile update form with React and FastAPI backend integration.\n\n## ACCEPTANCE CRITERIA\n- React UI form\n- FastAPI endpoint integration',
+                labels: [{ name: 'feature' }, { name: 'task' }],
+                state: 'open'
+              })
+            };
+          }
+          if (url.includes('/assignees')) {
+            return {
+              ok: true,
+              headers: new Headers(),
+              json: async () => ([
+                { id: 120955748, login: 'SHAM-MAX', avatar_url: 'https://avatars.githubusercontent.com/u/120955748' }
+              ])
+            };
+          }
+          if (url.includes('/issues')) {
+            // Return 5 open issues assigned to SHAM-MAX (making them overloaded since maxConcurrentTasks is 3)
+            return {
+              ok: true,
+              headers: new Headers(),
+              json: async () => ([
+                { number: 1, title: 'Task 1', assignees: [{ login: 'SHAM-MAX' }] },
+                { number: 2, title: 'Task 2', assignees: [{ login: 'SHAM-MAX' }] },
+                { number: 3, title: 'Task 3', assignees: [{ login: 'SHAM-MAX' }] },
+                { number: 4, title: 'Task 4', assignees: [{ login: 'SHAM-MAX' }] },
+                { number: 5, title: 'Task 5', assignees: [{ login: 'SHAM-MAX' }] }
+              ])
+            };
+          }
+          if (url.includes('/contributors')) {
+            return {
+              ok: true,
+              headers: new Headers(),
+              json: async () => ([
+                { login: 'SHAM-MAX', contributions: 12 }
+              ])
+            };
+          }
+          return { ok: true, headers: new Headers(), json: async () => ({ full_name: `${owner}/${repo}` }) };
+        }
+        return originalFetch(reqUrl, fetchOptions);
+      };
+
+      const prompt = 'Analyze GitHub issue #10 in this repository and recommend the best eligible developer using your actual Developer Assignment Intelligence engine. Show the real candidate usernames, overall fit score, confidence, all five scoring criteria with their canonical weights, supporting evidence, workload/capacity warnings, and missing-data warnings. Use the saved Assignment Policy. Do not assign the issue yet.';
+      const context = {
+        host: 'github.com',
+        owner,
+        repository: repo,
+        url: `https://github.com/${owner}/${repo}/issues/10`,
+        pageType: 'issue',
+        issueNumber: 10
+      };
+
+      const result = await assistant.answerAssistant({ message: prompt, context }, testUser.id, 'mock_token');
+
+      // 4. Confirm that the declared skills, capacity and availability are used by the scoring engine
+      assert.ok(result.assignmentRecommendations, 'Must return structured assignmentRecommendations');
+      const rec = result.assignmentRecommendations.recommendations[0];
+      assert.equal(rec.githubUsername, 'SHAM-MAX');
+
+      // Declared skills matched React and FastAPI from the task description
+      assert.ok(rec.criteria.technicalSkills.score > 20, 'Technical skills score must reflect matched skills');
+      assert.ok(rec.criteria.technicalSkills.matchedSkills.includes('react') || rec.criteria.technicalSkills.matchedSkills.includes('fastapi'));
+      assert.equal(rec.criteria.technicalSkills.evidenceSource, 'Project Developer Profile');
+
+      // Declared availability is used
+      assert.equal(rec.criteria.availabilityAndDeadlines.isAvailable, true);
+      assert.equal(rec.criteria.availabilityAndDeadlines.weeklyCapacityHours, 20);
+
+      // Max concurrent tasks capacity from profile (3) is used
+      assert.equal(rec.criteria.workloadAndEffort.maxConcurrentTasks, 3);
+      assert.equal(rec.criteria.workloadAndEffort.openAssignedIssues, 5);
+
+      // 5. Confirm the candidate remains blocked from normal assignment because overloaded (5 open vs 3 max capacity)
+      assert.equal(rec.isOverloaded, true);
+      assert.equal(rec.isRecommended, false);
+      assert.equal(rec.recommendationStatus, 'overloaded');
+      assert.match(result.reply, /Overloaded/);
+
+      // 6. Confirm no issue gets assigned during this test
+      assert.equal(githubIssueAssigned, false, 'No issue must be assigned on GitHub');
+      assert.match(result.reply, /no issue was assigned/i);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
 });
+
 

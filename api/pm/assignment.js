@@ -171,7 +171,19 @@ router.put('/profile', async (req, res) => {
     const requiredRole = (targetUserId !== authUser.id) ? 'Manager' : 'Viewer';
     const { project } = await getOrCreateProjectAndAuthorize(req, requiredRole);
 
-    const { declaredSkills, weeklyCapacityHours, maxConcurrentTasks, isAvailable, currentFocus } = req.body;
+    const declaredSkills = req.body.declaredSkills !== undefined ? req.body.declaredSkills : (req.body.skills !== undefined ? req.body.skills : req.body.declared_skills);
+    const weeklyCapacityHours = req.body.weeklyCapacityHours !== undefined ? req.body.weeklyCapacityHours : (req.body.weeklyHoursCapacity !== undefined ? req.body.weeklyHoursCapacity : req.body.weekly_capacity_hours);
+    const maxConcurrentTasks = req.body.maxConcurrentTasks !== undefined ? req.body.maxConcurrentTasks : req.body.max_concurrent_tasks;
+    
+    // Normalize boolean availability or string status ("available", "busy", "unavailable")
+    let isAvailable = req.body.isAvailable !== undefined ? req.body.isAvailable : (req.body.is_available !== undefined ? req.body.is_available : true);
+    if (typeof req.body.availabilityStatus === 'string') {
+      isAvailable = req.body.availabilityStatus.toLowerCase() === 'available';
+    } else if (typeof isAvailable === 'string') {
+      isAvailable = isAvailable.toLowerCase() === 'true' || isAvailable.toLowerCase() === 'available';
+    }
+
+    const currentFocus = req.body.currentFocus !== undefined ? req.body.currentFocus : req.body.current_focus;
 
     const profile = await developerStore.upsertDeveloperProfile(project.id, targetUserId, {
       declaredSkills,
