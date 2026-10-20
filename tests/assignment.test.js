@@ -560,4 +560,165 @@ test('Developer Assignment Intelligence (Phase 1)', async (t) => {
     assert.equal(recs[0].isRecommended, false);
     assert.equal(recs[0].fitLevel, 'weak');
   });
+
+  await t.test('12. Assignment Policy Store & Policy API endpoint (RBAC and defaults)', async () => {
+    const aliceSession = await createSession(alice.id);
+    const bobSession = await createSession(bob.id);
+
+    // 1. Viewer (Bob) can read project policy
+    const getRes = await fetch(`${baseUrl}/api/pm/assignment/policy?owner=${testOwner}&repo=${testRepo}`, {
+      headers: { 'Cookie': `relay_pm_session=${bobSession}` }
+    });
+    assert.equal(getRes.status, 200);
+    const getData = await getRes.json();
+    assert.equal(getData.policy.mode, 'recommendation');
+    assert.equal(getData.policy.min_confidence_score, 70);
+
+    // 2. Viewer (Bob) cannot update project policy (Manager required -> 403)
+    const viewerPutRes = await fetch(`${baseUrl}/api/pm/assignment/policy?owner=${testOwner}&repo=${testRepo}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Cookie': `relay_pm_session=${bobSession}`
+      },
+      body: JSON.stringify({ mode: 'automatic', minConfidenceScore: 80 })
+    });
+    assert.equal(viewerPutRes.status, 403);
+
+    // 3. Manager (Alice) can update project policy
+    const mgrPutRes = await fetch(`${baseUrl}/api/pm/assignment/policy?owner=${testOwner}&repo=${testRepo}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Cookie': `relay_pm_session=${aliceSession}`
+      },
+      body: JSON.stringify({
+        mode: 'automatic',
+        minConfidenceScore: 85,
+        enforceCapacityLimits: true,
+        allowGrowthAllocation: false
+      })
+    });
+    assert.equal(mgrPutRes.status, 200);
+    const mgrData = await mgrPutRes.json();
+    assert.equal(mgrData.policy.mode, 'automatic');
+    assert.equal(mgrData.policy.min_confidence_score, 85);
+    assert.equal(mgrData.policy.allow_growth_allocation, false);
+
+    // Reset back to safe recommendation mode for subsequent tests
+    await fetch(`${baseUrl}/api/pm/assignment/policy?owner=${testOwner}&repo=${testRepo}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Cookie': `relay_pm_session=${aliceSession}`
+      },
+      body: JSON.stringify({ mode: 'recommendation', minConfidenceScore: 70 })
+    });
+  });
+
+  await t.test('13. Real assignment execution endpoint (POST /api/pm/assignment/assign) with GitHub confirmation and audit trail', async () => {
+    // Set TOKEN_ENCRYPTION_KEY if not set
+    process.env.TOKEN_ENCRYPTION_KEY = process.env.TOKEN_ENCRYPTION_KEY || '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    const key = Buffer.from(process.env.TOKEN_ENCRYPTION_KEY, 'hex');
+    const cryptoModule = await import('crypto');
+    const iv = cryptoModule.randomBytes(16);
+    const cipher = cryptoModule.createCipheriv('aes-256-gcm', key, iv);
+    let encrypted = cipher.update('ghp_mocktoken12345678901234567890123456', 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    const authTag = cipher.getAuthTag().toString('hex');
+    const encryptedTokenStr = encrypted + ':' + authTag;
+    const tokenIvHex = iv.toString('hex');
+
+    await db.query(`UPDATE pm_users SET encrypted_token = $1, token_iv = $2 WHERE id = $3`, [encryptedTokenStr, tokenIvHex, alice.id]);
+
+    const aliceSession = await createSession(alice.id);
+    const originalFetch = global.fetch;
+
+    try {
+      // Mock GitHub issue assignment API
+      global.fetch = async (url, options) => {
+        const urlStr = String(url);
+        if (urlStr.includes('/issues/10/assignees')) {
+          const body = JSON.parse(options.body);
+          return {
+            ok: true,
+            status: 201,
+            json: async () => ({
+              number: 10,
+              html_url: `https://github.com/${testOwner}/${testRepo}/issues/10`,
+              assignees: [{ login: body.assignees[0] }]
+            })
+          };
+        }
+        return originalFetch(url, options);
+      };
+
+      const assignRes = await originalFetch(`${baseUrl}/api/pm/assignment/assign?owner=${testOwner}&repo=${testRepo}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cookie': `relay_pm_session=${aliceSession}`
+        },
+        body: JSON.stringify({
+          issueNumber: 10,
+          assignee: 'alice',
+          mode: 'manual_approval'
+        })
+      });
+
+      assert.equal(assignRes.status, 200);
+      const data = await assignRes.json();
+      assert.equal(data.success, true);
+      assert.equal(data.assigned, true);
+      assert.equal(data.assignee, 'alice');
+      assert.equal(data.issueNumber, 10);
+      assert.match(data.githubUrl, /issues\/10/);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  await t.test('14. Assignment execution partial failure detection when GitHub drops ineligible assignee', async () => {
+    const aliceSession = await createSession(alice.id);
+    const originalFetch = global.fetch;
+
+    try {
+      // Mock GitHub returning 200 but empty assignees (GitHub silently ignores non-collaborators)
+      global.fetch = async (url, options) => {
+        const urlStr = String(url);
+        if (urlStr.includes('/issues/20/assignees')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              number: 20,
+              html_url: `https://github.com/${testOwner}/${testRepo}/issues/20`,
+              assignees: [] // Ineligible user was dropped by GitHub
+            })
+          };
+        }
+        return originalFetch(url, options);
+      };
+
+      const assignRes = await originalFetch(`${baseUrl}/api/pm/assignment/assign?owner=${testOwner}&repo=${testRepo}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cookie': `relay_pm_session=${aliceSession}`
+        },
+        body: JSON.stringify({
+          issueNumber: 20,
+          assignee: 'ineligible_dev',
+          mode: 'manual_approval'
+        })
+      });
+
+      assert.equal(assignRes.status, 422);
+      const data = await assignRes.json();
+      assert.match(data.error, /not an eligible collaborator or assignee/);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
 });
+

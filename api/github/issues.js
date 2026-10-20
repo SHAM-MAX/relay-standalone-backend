@@ -233,11 +233,28 @@ export default async function (req, res) {
         await traceabilityStore.updateWorkItemGitHubLink(workItem.id, data.number, data.html_url);
       }
 
+      const confirmedAssignees = (data.assignees || []).map(a => a.login);
+      let assignmentStatus = null;
+      if (resolvedAssignees.length > 0) {
+        const primaryRequested = resolvedAssignees[0].toLowerCase();
+        const matched = confirmedAssignees.some(l => l.toLowerCase() === primaryRequested);
+        if (matched) {
+          assignmentStatus = { assigned: true, assignees: confirmedAssignees };
+        } else {
+          assignmentStatus = {
+            assigned: false,
+            warning: `@${resolvedAssignees[0]} was requested but could not be assigned (not a repository collaborator or lacks permissions).`
+          };
+        }
+      }
+
       results.push({
           title: data.title,
           number: data.number,
           url: data.html_url,
-          status: 'success'
+          status: 'success',
+          assignees: confirmedAssignees,
+          assignment: assignmentStatus
       });
     } catch (err) {
       console.error(err);

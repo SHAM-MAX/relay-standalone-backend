@@ -3,8 +3,10 @@ import { authenticateRequest, authorizeProjectAction, decryptToken, getProjectRo
 import { RELAY_ORIGIN, header, hasOrigin, corsHeaders } from '../../lib/assistant-access.js';
 import developerStore from '../../lib/developer-store.js';
 import projectStore from '../../lib/project-store.js';
+import memberStore from '../../lib/member-store.js';
 import githubEvidence from '../../lib/github-evidence.js';
 import assignmentEngine from '../../lib/assignment-engine.js';
+import assignmentPolicyStore from '../../lib/assignment-policy-store.js';
 import db from '../../lib/db.js';
 
 const router = express.Router();
@@ -91,6 +93,50 @@ async function getOrCreateProjectAndAuthorize(req, requiredRole = 'Viewer') {
 }
 
 /**
+ * GET /api/pm/assignment/policy
+ * Get project assignment policy configuration.
+ */
+router.get('/policy', async (req, res) => {
+  try {
+    const { project } = await getOrCreateProjectAndAuthorize(req, 'Viewer');
+    const policy = await assignmentPolicyStore.getAssignmentPolicy(project.id);
+    return res.json({ policy });
+  } catch (err) {
+    const status = err.status || (
+      err.message.includes('not a member') ? 403 :
+      err.message.includes('cookie') ? 401 : 500
+    );
+    return res.status(status).json({ error: err.message });
+  }
+});
+
+/**
+ * PUT /api/pm/assignment/policy
+ * Update project assignment policy configuration. Requires Manager or Approver role.
+ */
+router.put('/policy', async (req, res) => {
+  try {
+    const { project, authUser } = await getOrCreateProjectAndAuthorize(req, 'Manager');
+    const { mode, minConfidenceScore, enforceCapacityLimits, allowGrowthAllocation } = req.body || {};
+
+    const policy = await assignmentPolicyStore.updateAssignmentPolicy(project.id, authUser.id, {
+      mode,
+      minConfidenceScore,
+      enforceCapacityLimits,
+      allowGrowthAllocation
+    });
+
+    return res.json({ policy });
+  } catch (err) {
+    const status = err.status || (
+      err.message.includes('requires') || err.message.includes('not a member') ? 403 :
+      err.message.includes('cookie') ? 401 : 400
+    );
+    return res.status(status).json({ error: err.message });
+  }
+});
+
+/**
  * GET /api/pm/assignment/profile
  * Get developer profile for current user or project members.
  */
@@ -148,7 +194,7 @@ router.put('/profile', async (req, res) => {
 /**
  * POST /api/pm/assignment/recommendations
  * Deterministic developer assignment intelligence.
- * Strictly advisory recommendations: no auto-assignments occur.
+ * Strictly advisory recommendations: no auto-assignments occur on this endpoint.
  */
 router.post('/recommendations', async (req, res) => {
   try {
@@ -160,14 +206,20 @@ router.post('/recommendations', async (req, res) => {
       githubToken = decryptToken(authUser.encrypted_token, authUser.token_iv);
     }
 
+    // 0. Fetch candidate project members to verify membership
+    const candidateMembers = await memberStore.getMembers(project.id).catch(() => []);
+
     // 1. Fetch eligible repository assignees from GitHub API
     const { assignees: eligibleAssignees, warning: assigneeWarning } = 
-      await githubEvidence.fetchEligibleAssignees(owner, repo, githubToken);
+      await githubEvidence.fetchEligibleAssignees(owner, repo, githubToken, candidateMembers);
+
+    const policy = await assignmentPolicyStore.getAssignmentPolicy(project.id);
 
     if (!eligibleAssignees || eligibleAssignees.length === 0) {
       return res.json({
         recommendations: [],
         warnings: [assigneeWarning || 'No eligible assignees found for this repository on GitHub.'],
+        policy,
         metadata: {
           evaluatedCandidatesCount: 0,
           task: req.body.task || {},
@@ -222,6 +274,7 @@ router.post('/recommendations', async (req, res) => {
     return res.json({
       recommendations,
       warnings: allWarnings,
+      policy,
       metadata: {
         evaluatedCandidatesCount: candidates.length,
         task: taskInput,
@@ -231,6 +284,135 @@ router.post('/recommendations', async (req, res) => {
   } catch (err) {
     const status = err.status || (
       err.message.includes('not a member') || err.message.includes('requires') ? 403 :
+      err.message.includes('cookie') ? 401 : 500
+    );
+    return res.status(status).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/pm/assignment/assign
+ * Execute an assignment on an existing GitHub issue.
+ * Supports manual approval and explicit override with audit tracking.
+ */
+router.post('/assign', async (req, res) => {
+  try {
+    const { project, authUser, owner, repo } = await getOrCreateProjectAndAuthorize(req, 'Manager');
+
+    const { issueNumber, assignee, mode = 'manual_approval', isOverride = false } = req.body || {};
+    const num = Number(issueNumber);
+    if (!num || isNaN(num) || num <= 0) {
+      return res.status(400).json({ error: 'Valid positive issueNumber is required' });
+    }
+    if (!assignee || typeof assignee !== 'string' || !assignee.trim()) {
+      return res.status(400).json({ error: 'assignee username is required' });
+    }
+    const cleanAssignee = assignee.trim();
+
+    // Decrypt GitHub token
+    let githubToken = null;
+    if (authUser.encrypted_token && authUser.token_iv) {
+      githubToken = decryptToken(authUser.encrypted_token, authUser.token_iv);
+    }
+    if (!githubToken) {
+      return res.status(403).json({ error: 'GitHub authentication token required to update issue assignees' });
+    }
+
+    // Call GitHub REST API to assign issue
+    const assignUrl = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${num}/assignees`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    const ghRes = await fetch(assignUrl, {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/vnd.github.v3+json',
+        'Authorization': `Bearer ${githubToken}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Relay-App'
+      },
+      body: JSON.stringify({ assignees: [cleanAssignee] }),
+      signal: controller.signal
+    }).catch(err => {
+      clearTimeout(timeoutId);
+      throw new Error(`GitHub network request failed: ${err.message}`);
+    });
+    clearTimeout(timeoutId);
+
+    if (!ghRes.ok) {
+      let errText = `GitHub API error: ${ghRes.status}`;
+      try {
+        const ghData = await ghRes.json();
+        if (ghData.message) errText += ` - ${ghData.message}`;
+      } catch {}
+
+      await assignmentPolicyStore.recordExecution({
+        projectId: project.id,
+        issueNumber: num,
+        githubIssueUrl: `https://github.com/${owner}/${repo}/issues/${num}`,
+        assignee: cleanAssignee,
+        mode: isOverride ? 'manual_override' : mode,
+        status: 'failed',
+        errorMessage: errText,
+        userId: authUser.id
+      });
+
+      return res.status(ghRes.status === 404 ? 404 : (ghRes.status === 403 ? 403 : 400)).json({
+        error: `Could not assign @${cleanAssignee} to issue #${num}: ${errText}`
+      });
+    }
+
+    const ghData = await ghRes.json();
+    const confirmedAssignees = (ghData.assignees || []).map(a => a.login);
+    const issueUrl = ghData.html_url || `https://github.com/${owner}/${repo}/issues/${num}`;
+
+    // Verify GitHub actually added the assignee (if user is ineligible, GitHub returns 200/201 but empty assignees)
+    const assigneeLower = cleanAssignee.toLowerCase();
+    const wasAssigned = confirmedAssignees.some(login => login.toLowerCase() === assigneeLower);
+
+    if (!wasAssigned) {
+      const notEligibleMsg = `@${cleanAssignee} is not an eligible collaborator or assignee for ${owner}/${repo} on GitHub.`;
+      await assignmentPolicyStore.recordExecution({
+        projectId: project.id,
+        issueNumber: num,
+        githubIssueUrl: issueUrl,
+        assignee: cleanAssignee,
+        mode: isOverride ? 'manual_override' : mode,
+        status: 'failed',
+        errorMessage: notEligibleMsg,
+        userId: authUser.id
+      });
+
+      return res.status(422).json({
+        error: notEligibleMsg,
+        assignee: cleanAssignee,
+        issueNumber: num,
+        githubUrl: issueUrl
+      });
+    }
+
+    // Record successful assignment execution
+    await assignmentPolicyStore.recordExecution({
+      projectId: project.id,
+      issueNumber: num,
+      githubIssueUrl: issueUrl,
+      assignee: cleanAssignee,
+      mode: isOverride ? 'manual_override' : mode,
+      status: 'success',
+      userId: authUser.id
+    });
+
+    return res.json({
+      success: true,
+      issueNumber: num,
+      assignee: cleanAssignee,
+      assigned: true,
+      githubUrl: issueUrl,
+      assignees: confirmedAssignees
+    });
+  } catch (err) {
+    const status = err.status || (
+      err.message.includes('requires') || err.message.includes('not a member') ? 403 :
       err.message.includes('cookie') ? 401 : 500
     );
     return res.status(status).json({ error: err.message });
