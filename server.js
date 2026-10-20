@@ -16,7 +16,7 @@ import pmHealthRoute from './api/pm/health.js';
 import pmReportsRoute from './api/pm/reports.js';
 import authRoute from './api/auth.js';
 import db from './lib/db.js';
-import { getMigrationStatus } from './lib/migrator.js';
+import { getMigrationStatus, runMigrations } from './lib/migrator.js';
 
 dotenv.config();
 
@@ -98,7 +98,9 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
       const status = await getMigrationStatus().catch(() => []);
       const pending = status.filter((m) => !m.applied);
       if (pending.length > 0) {
-        console.log(`[Database Notice]: ${pending.length} pending migration(s) detected. Run 'npm run migrate' to apply.`);
+        console.log(`[Database]: Applying ${pending.length} pending migration(s) on startup...`);
+        const result = await runMigrations();
+        console.log(`[Database]: Successfully applied ${result.applied.length} migration(s). Total: ${result.total}.`);
       } else {
         console.log(`[Database]: Schema migrations up-to-date (${status.length} verified).`);
       }
