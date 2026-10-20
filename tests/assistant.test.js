@@ -502,3 +502,109 @@ test('Groq structured response can contain issuePlan and projectPlan (nullable)'
     global.fetch = originalFetch;
   }
 });
+
+test('regression: chat request for developer recommendation invokes assignment engine and returns 5 canonical criteria without LLM hallucination', async () => {
+  const originalFetch = global.fetch;
+  let issueFetched = null;
+  let assigneesFetched = null;
+
+  try {
+    global.fetch = async (reqUrl, fetchOptions) => {
+      const url = String(reqUrl);
+      if (url.includes('api.github.com')) {
+        if (url.includes('/issues/10')) {
+          issueFetched = url;
+          return {
+            ok: true,
+            headers: new Headers(),
+            json: async () => ({
+              number: 10,
+              title: 'Optimize Postgres indexing and connection pool',
+              body: 'Improve query performance and ensure DB connections do not leak.',
+              labels: [{ name: 'backend' }, { name: 'database' }],
+              state: 'open'
+            })
+          };
+        }
+        if (url.includes('/assignees')) {
+          assigneesFetched = url;
+          return {
+            ok: true,
+            headers: new Headers(),
+            json: async () => ([
+              { id: 101, login: 'lead-dev', avatar_url: 'https://avatars.githubusercontent.com/u/101' },
+              { id: 102, login: 'junior-dev', avatar_url: 'https://avatars.githubusercontent.com/u/102' }
+            ])
+          };
+        }
+        if (url.includes('/issues')) {
+          return {
+            ok: true,
+            headers: new Headers(),
+            json: async () => ([
+              { number: 1, title: 'Old issue', assignees: [{ login: 'lead-dev' }] }
+            ])
+          };
+        }
+        if (url.includes('/contributors')) {
+          return {
+            ok: true,
+            headers: new Headers(),
+            json: async () => ([
+              { login: 'lead-dev', contributions: 25 },
+              { login: 'junior-dev', contributions: 3 }
+            ])
+          };
+        }
+        return { ok: true, headers: new Headers(), json: async () => ({ full_name: 'SHAM-MAX/GitHub-Kanban-Practice' }) };
+      }
+      return originalFetch(reqUrl, fetchOptions);
+    };
+
+    const prompt = 'Analyze GitHub issue #10 in this repository and recommend the best eligible developer based on demonstrated skills, repository familiarity, current workload, and declared availability. Show the evidence and score breakdown. Do not assign the issue yet.';
+    const context = {
+      host: 'github.com',
+      owner: 'SHAM-MAX',
+      repository: 'GitHub-Kanban-Practice',
+      url: 'https://github.com/SHAM-MAX/GitHub-Kanban-Practice/issues/10',
+      pageType: 'issue',
+      issueNumber: 10,
+      pullRequestNumber: null,
+      branch: null
+    };
+
+    const result = await assistant.answerAssistant({ message: prompt, context }, 42);
+
+    // 1. Verify GitHub issue #10 and assignees were queried
+    assert.ok(issueFetched && issueFetched.includes('/issues/10'), 'Must fetch issue #10 from GitHub API');
+    assert.ok(assigneesFetched && assigneesFetched.includes('/assignees'), 'Must fetch assignees from GitHub API');
+
+    // 2. Deterministic assignment engine model used
+    assert.equal(result.model, 'deterministic-assignment-engine');
+    assert.ok(result.assignmentRecommendations, 'Must return structured assignmentRecommendations');
+    assert.equal(result.assignmentRecommendations.issueNumber, 10);
+    assert.ok(result.assignmentRecommendations.recommendations.length > 0);
+
+    // 3. Confirm 5 canonical criteria and weights are in the response
+    assert.match(result.reply, /Technical Skills & Experience \(30%\)/);
+    assert.match(result.reply, /Current Workload & Estimated Effort \(25%\)/);
+    assert.match(result.reply, /Repository Familiarity \(20%\)/);
+    assert.match(result.reply, /Availability & Capacity \(15%\)/);
+    assert.match(result.reply, /Growth & Fairness \(10%\)/);
+
+    // 4. Recommendation-only requirement: no issue assigned
+    assert.match(result.reply, /no issue was assigned/i);
+
+    // 5. Check candidates and criteria breakdown
+    const topRec = result.assignmentRecommendations.recommendations[0];
+    assert.ok(topRec.githubUsername);
+    assert.ok(topRec.overallScore >= 0);
+    assert.equal(topRec.criteria.technicalSkills.weight, '30%');
+    assert.equal(topRec.criteria.workloadAndEffort.weight, '25%');
+    assert.equal(topRec.criteria.repositoryFamiliarity.weight, '20%');
+    assert.equal(topRec.criteria.availabilityAndDeadlines.weight, '15%');
+    assert.equal(topRec.criteria.growthAndFairness.weight, '10%');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
